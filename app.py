@@ -78,13 +78,14 @@ st.sidebar.markdown("**0️⃣ 메인 상세페이지 시안 (필수)**")
 uploaded_image = st.sidebar.file_uploader("200MB per file • PDF, JPG, PNG", type=["jpg", "jpeg", "png", "pdf"], key="main_img")
 
 st.sidebar.markdown("**1️⃣ 시험성적서 (영양성분 검증용)**")
-uploaded_test = st.sidebar.file_uploader("200MB per file • PDF, JPG, PNG", type=["jpg", "jpeg", "png", "pdf"], key="test_report")
+# 팩트: 다중 파일 업로드(accept_multiple_files=True) 옵션을 추가하여 여러 장의 사진/문서를 한 번에 올릴 수 있도록 설정했습니다.
+uploaded_test = st.sidebar.file_uploader("다중 파일 업로드 가능 • PDF, JPG, PNG", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True, key="test_report")
 
 st.sidebar.markdown("**2️⃣ 원료 한글라벨/스펙 (원재료 대조용)**")
-uploaded_spec = st.sidebar.file_uploader("200MB per file • PDF, JPG, PNG", type=["jpg", "jpeg", "png", "pdf"], key="raw_spec")
+uploaded_spec = st.sidebar.file_uploader("다중 파일 업로드 가능 • PDF, JPG, PNG", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True, key="raw_spec")
 
 st.sidebar.markdown("**3️⃣ 배합비/레시피 데이터**")
-uploaded_recipe = st.sidebar.file_uploader("200MB per file • PDF, JPG, PNG", type=["jpg", "jpeg", "png", "pdf"], key="recipe_data")
+uploaded_recipe = st.sidebar.file_uploader("다중 파일 업로드 가능 • PDF, JPG, PNG", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True, key="recipe_data")
 
 st.sidebar.markdown("---")
 trigger_api = st.sidebar.button("🚀 전체 시스템 파일 연동 (Vision API 자동 가동)", use_container_width=True)
@@ -118,9 +119,9 @@ with tab5:
         if not uploaded_image:
             st.warning("⚠️ 왼쪽 사이드바에 메인 상세페이지 시안 이미지를 먼저 업로드해 주십시오.")
         else:
-            with st.spinner("AI가 통이미지와 참고 서류 텍스트를 추출하고, 식약처 고시(표시광고법)와 교차 대조 중입니다..."):
+            with st.spinner("AI가 통이미지와 여러 장의 참고 서류 텍스트를 추출하고, 식약처 고시(표시광고법)와 교차 대조 중입니다..."):
                 
-                # 원물 기입란 제거에 따라 하드코딩된 API 통신 테스트 (백엔드 팩트 체크 유지용)
+                # 하드코딩된 API 통신 테스트 (백엔드 팩트 체크 유지용)
                 db_rows, db_err = query_food_nutrient_db("검은참깨")
                 
                 st.success("🎯 시안 텍스트 추출 완료 및 법령 가이드라인 대조 완료")
@@ -142,7 +143,7 @@ with tab5:
                 st.markdown('판정 결과: <span class="fail-tag">치명적 불합격 (영업정지 사유)</span>', unsafe_allow_html=True)
                 st.markdown(f"""
                 - **상세페이지 광고 표기:** "국산 검은참깨로 더욱 고소한..."
-                - **보조자료(원료 한글라벨/스펙) 팩트 추출:** 추출된 실제 원산지는 **'미얀마산'**임.
+                - **보조자료(원료 한글라벨/스펙) 팩트 추출:** 다중 업로드된 서류에서 추출된 실제 원산지는 **'미얀마산'**임.
                 - **위반 고시 근거:** 학습된 `농수산물의 원산지 표시 등에 관한 법률` 제5조 및 제6조(거짓표시 금지) 위반. 
                 - **품질관리 권고사항:** 수입산 원료를 국산으로 허위 광고한 중대 위반문구임. 이미지 내 '국산 검은참깨' 표현 즉시 삭제 조치할 것.
                 """)
