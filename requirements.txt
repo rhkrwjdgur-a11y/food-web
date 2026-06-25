@@ -1,5 +1,5 @@
-streamlit==1.32.0
-requests==2.31.0
-pandas==2.2.0
-pillow==10.2.0
-PyPDF2==3.0.1
+streamlit
+requests
+pandas
+pillow
+PyPDF2
