@@ -3,3 +3,4 @@ requests
 pandas
 pillow
 PyPDF2
+google-generativeai
