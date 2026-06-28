@@ -15,7 +15,7 @@ st.markdown("""
     .risk-critical { background-color: #fdf2f2; padding: 20px; border-radius: 10px; border-left: 6px solid #dc3545; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     .risk-warning { background-color: #fefaf0; padding: 20px; border-radius: 10px; border-left: 6px solid #f39c12; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     .card-title { font-size: 18px; font-weight: bold; color: #2c3e50; margin-bottom: 15px; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
-    .section-title { font-size: 20px; font-weight: bold; color: #1a252f; border-bottom: 2px solid #34495e; padding-bottom: 8px; margin-top: 25px; margin-bottom: 15px; }
+    .section-title { font-size: 20px; font-weight: bold; color: #1a252f; border-bottom: 2px solid #34495e; padding-bottom: 8px; margin-top: 10px; margin-bottom: 15px; }
     .metric-box { text-align: center; background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
     .metric-num { font-size: 26px; font-weight: bold; margin-top: 5px; display: block; }
     </style>
@@ -64,7 +64,7 @@ def analyze_design_with_ai(image_obj, ref_files, legal_text):
     content_payload = []
     main_chunks = []
     
-    # 메인 이미지 분할 (해상도 보존 팩트 로직)
+    # 메인 이미지 분할 (해상도 보존 로직)
     width, height = image_obj.size
     max_height = 10000
     
@@ -118,7 +118,6 @@ def analyze_design_with_ai(image_obj, ref_files, legal_text):
     
     content_payload.append(prompt)
     
-    # 팩트: AI 응답을 무조건 JSON으로만 받도록 타입 강제 지정 (문자열 파싱 에러 방지)
     response = model.generate_content(
         content_payload,
         generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
@@ -142,7 +141,7 @@ st.sidebar.markdown("---")
 trigger_api = st.sidebar.button("⚙️ 실시간 심사 엔진 가동 (Vision API)", use_container_width=True)
 
 # ==========================================
-# 오른쪽 메인 화면: AI 분석 리포트
+# 최상단: 타이틀 및 지식베이스 로딩 상태
 # ==========================================
 st.title("🛡️ 식품 상세페이지 표시·광고 사전 통제 시스템")
 st.markdown("---")
@@ -151,82 +150,92 @@ legal_knowledge_base, learn_error = load_guideline_knowledge()
 if not learn_error and legal_knowledge_base:
     st.info("📚 식약처 부당광고 고시 및 영양표시 지침 실시간 학습 완료")
 
+# ==========================================
+# 메인 화면 레이아웃 분할 (좌: 원본 미리보기 / 우: AI 리포트)
+# ==========================================
 if not uploaded_image:
     st.warning("👈 왼쪽 메뉴에서 상세페이지 시안 이미지를 업로드해 주십시오.")
 else:
     img = Image.open(uploaded_image)
     
-    if trigger_api:
-        with st.spinner("구글 Vision API 가동 중: 정밀 스캔 및 이미지 좌표 크롭 매칭을 진행하고 있습니다 (약 10~20초 소요)..."):
-            try:
-                ref_files = []
-                if uploaded_test: ref_files.extend(uploaded_test)
-                if uploaded_spec: ref_files.extend(uploaded_spec)
-                if uploaded_recipe: ref_files.extend(uploaded_recipe)
-                
-                # AI 분석 호출 및 JSON 데이터 획득
-                json_result, chunk_list = analyze_design_with_ai(img, ref_files, legal_knowledge_base)
-                
-                # 문자열로 반환된 JSON을 파이썬 딕셔너리로 완벽 변환
-                report_data = json.loads(json_result)
-                
-                st.markdown('<div class="section-title">📊 광고 적정성 종합 진단 결과</div>', unsafe_allow_html=True)
-                
-                if not report_data:
-                    st.success("✅ 심사 완료: 식약처 고시 위반 및 증빙 서류 불일치 리스크가 발견되지 않았습니다.")
-                else:
-                    # 요약 지표 계산
-                    critical_cnt = sum(1 for r in report_data if r.get("risk_level") == "치명적 위반")
-                    warning_cnt = sum(1 for r in report_data if r.get("risk_level") == "수정 권고")
-                    
-                    stat_c1, stat_c2, stat_c3 = st.columns(3)
-                    with stat_c1:
-                        st.markdown(f'<div class="metric-box">🚨 치명적 위반 <br><span class="metric-num" style="color:#dc3545;">{critical_cnt}건</span></div>', unsafe_allow_html=True)
-                    with stat_c2:
-                        st.markdown(f'<div class="metric-box">⚠️ 수정 권고 <br><span class="metric-num" style="color:#f39c12;">{warning_cnt}건</span></div>', unsafe_allow_html=True)
-                    with stat_c3:
-                        st.markdown(f'<div class="metric-box">✅ 검토 완료 <br><span class="metric-num" style="color:#2ecc71;">완료</span></div>', unsafe_allow_html=True)
-                    
-                    st.write("")
-                    st.markdown("### 🎯 적발 구역별 상세 리포트")
-                    st.write("")
-                    
-                    # AI가 찾아낸 좌표를 바탕으로 이미지를 자동 크롭하여 결과와 나란히 배치
-                    for idx, issue in enumerate(report_data):
-                        slice_idx = issue.get("slice_index", 0)
-                        
-                        row_col1, row_col2 = st.columns([1, 2])
-                        
-                        with row_col1:
-                            if slice_idx < len(chunk_list):
-                                target_chunk = chunk_list[slice_idx]
-                                cw, ch = target_chunk.size
-                                sy = int(ch * issue.get("y_start_ratio", 0.0))
-                                ey = int(ch * issue.get("y_end_ratio", 1.0))
-                                
-                                # 여백이 너무 좁을 경우를 대비한 보정
-                                if ey <= sy: ey = min(sy + int(ch*0.1), ch)
-                                
-                                cropped_img = target_chunk.crop((0, sy, cw, ey))
-                                st.image(cropped_img, caption=f"[AI 문제 인식 구역 {idx+1}]", use_container_width=True)
-                        
-                        with row_col2:
-                            risk = issue.get("risk_level", "수정 권고")
-                            css_class = "risk-critical" if risk == "치명적 위반" else "risk-warning"
-                            icon = "❌" if risk == "치명적 위반" else "⚠️"
-                            
-                            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-                            st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
-                            st.markdown(f"""
-                            - **스캔된 적발 문구:** {issue.get("found_text", "")}
-                            - **팩트 교차 검증:** {issue.get("fact_check", "")}
-                            - **QC 실무 조치 사항:** {issue.get("recommendation", "")}
-                            """)
-                            st.markdown('</div>', unsafe_allow_html=True)
-                        
-                        st.write("---") # 항목 간 구분선
+    # 팩트 복구: 좌우 1:1 분할 영역 재활성화
+    main_col1, main_col2 = st.columns([1, 1])
+    
+    with main_col1:
+        st.markdown('<div class="section-title">🔍 업로드된 전체 상세페이지 시안</div>', unsafe_allow_html=True)
+        # 업로드 즉시 원본 이미지를 항상 표시합니다.
+        st.image(img, caption="원본 시안 미리보기", use_container_width=True)
 
-            except json.JSONDecodeError:
-                st.error("AI 응답을 구조화하는 데 실패했습니다. 시스템 로그를 확인해 주십시오.")
-            except Exception as e:
-                st.error(f"이미지 크롭 또는 AI 분석 중 오류가 발생했습니다. 상세 에러: {e}")
+    with main_col2:
+        st.markdown('<div class="section-title">📊 구간별 정밀 검토 리포트</div>', unsafe_allow_html=True)
+        
+        if not trigger_api:
+            st.info("좌측 하단의 '실시간 심사 엔진 가동' 버튼을 누르면 AI 분석이 시작됩니다.")
+        else:
+            with st.spinner("구글 Vision API 가동 중: 정밀 스캔 및 이미지 좌표 크롭 매칭을 진행하고 있습니다 (약 10~20초 소요)..."):
+                try:
+                    ref_files = []
+                    if uploaded_test: ref_files.extend(uploaded_test)
+                    if uploaded_spec: ref_files.extend(uploaded_spec)
+                    if uploaded_recipe: ref_files.extend(uploaded_recipe)
+                    
+                    json_result, chunk_list = analyze_design_with_ai(img, ref_files, legal_knowledge_base)
+                    report_data = json.loads(json_result)
+                    
+                    if not report_data:
+                        st.success("✅ 심사 완료: 식약처 고시 위반 및 증빙 서류 불일치 리스크가 발견되지 않았습니다.")
+                    else:
+                        critical_cnt = sum(1 for r in report_data if r.get("risk_level") == "치명적 위반")
+                        warning_cnt = sum(1 for r in report_data if r.get("risk_level") == "수정 권고")
+                        
+                        stat_c1, stat_c2, stat_c3 = st.columns(3)
+                        with stat_c1:
+                            st.markdown(f'<div class="metric-box">🚨 치명적 위반 <br><span class="metric-num" style="color:#dc3545;">{critical_cnt}건</span></div>', unsafe_allow_html=True)
+                        with stat_c2:
+                            st.markdown(f'<div class="metric-box">⚠️ 수정 권고 <br><span class="metric-num" style="color:#f39c12;">{warning_cnt}건</span></div>', unsafe_allow_html=True)
+                        with stat_c3:
+                            st.markdown(f'<div class="metric-box">✅ 검토 완료 <br><span class="metric-num" style="color:#2ecc71;">완료</span></div>', unsafe_allow_html=True)
+                        
+                        st.write("")
+                        st.markdown("### 🎯 적발 구역별 상세 리포트")
+                        st.write("")
+                        
+                        # AI가 찾아낸 좌표를 바탕으로 이미지를 자동 크롭하여 결과와 나란히 배치 (우측 화면 내 분할)
+                        for idx, issue in enumerate(report_data):
+                            slice_idx = issue.get("slice_index", 0)
+                            
+                            # 우측 화면(main_col2) 안에서 다시 이미지 영역과 텍스트 영역을 분할
+                            crop_col, text_col = st.columns([1, 2])
+                            
+                            with crop_col:
+                                if slice_idx < len(chunk_list):
+                                    target_chunk = chunk_list[slice_idx]
+                                    cw, ch = target_chunk.size
+                                    sy = int(ch * issue.get("y_start_ratio", 0.0))
+                                    ey = int(ch * issue.get("y_end_ratio", 1.0))
+                                    
+                                    if ey <= sy: ey = min(sy + int(ch*0.1), ch)
+                                    
+                                    cropped_img = target_chunk.crop((0, sy, cw, ey))
+                                    st.image(cropped_img, caption=f"[AI 문제 인식 구역 {idx+1}]", use_container_width=True)
+                            
+                            with text_col:
+                                risk = issue.get("risk_level", "수정 권고")
+                                css_class = "risk-critical" if risk == "치명적 위반" else "risk-warning"
+                                icon = "❌" if risk == "치명적 위반" else "⚠️"
+                                
+                                st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+                                st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
+                                st.markdown(f"""
+                                - **스캔된 적발 문구:** {issue.get("found_text", "")}
+                                - **팩트 교차 검증:** {issue.get("fact_check", "")}
+                                - **QC 실무 조치 사항:** {issue.get("recommendation", "")}
+                                """)
+                                st.markdown('</div>', unsafe_allow_html=True)
+                            
+                            st.write("---") 
+
+                except json.JSONDecodeError:
+                    st.error("AI 응답을 구조화하는 데 실패했습니다. 시스템 로그를 확인해 주십시오.")
+                except Exception as e:
+                    st.error(f"이미지 크롭 또는 AI 분석 중 오류가 발생했습니다. 상세 에러: {e}")
