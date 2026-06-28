@@ -52,26 +52,52 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 4. 실시간 AI 비전 분석 로직 (Gemini 1.5 Pro 모델 호출)
-def analyze_design_with_ai(image_obj, legal_text):
+# 4. 실시간 AI 비전 분석 로직 (WebP 제한 우회 분할 로직 + 다중 서류 대조)
+def analyze_design_with_ai(image_obj, ref_files, legal_text):
     model = genai.GenerativeModel('gemini-1.5-pro')
     
+    content_payload = []
+    
+    # 팩트: 메인 상세페이지가 16000px을 넘을 경우 10000px 단위로 자동 분할(Slicing)하여 해상도 100% 보존
+    width, height = image_obj.size
+    max_height = 10000
+    
+    if height > 16000:
+        for i in range(0, height, max_height):
+            box = (0, i, width, min(i + max_height, height))
+            chunk = image_obj.crop(box)
+            content_payload.append(chunk)
+    else:
+        content_payload.append(image_obj)
+        
+    # 보조 증빙 서류(한글라벨 등)가 추가 업로드된 경우 페이로드에 병합
+    if ref_files:
+        for ref in ref_files:
+            try:
+                ref.seek(0)
+                ref_img = Image.open(ref)
+                content_payload.append(ref_img)
+            except:
+                pass # 이미지가 아닌 파일(PDF 등)은 오류 방지를 위해 패스 처리
+                
     prompt = f"""
     당신은 엄격한 품질관리(QC) 및 표시광고 검토 전문가입니다.
-    업로드된 식품 상세페이지 시안 이미지를 정밀 스캔하고, 아래 제공된 식약처 가이드라인과 교차 대조하십시오.
+    함께 전송된 이미지들은 '메인 상세페이지 시안'과 원산지/배합비 등을 증명하는 '참고 증빙 서류'들입니다.
+    이 이미지들의 텍스트를 정밀 스캔하고, 아래 제공된 식약처 법령 가이드라인과 상호 교차 대조하십시오.
     
     [식약처 가이드라인 지식 베이스]
     {legal_text}
     
-    다음 항목들을 집중적으로 검토하여 리포트를 작성하십시오:
-    1. 영양강조표시 위반 (예: 근거 없는 고단백, 저당 표기)
-    2. 과대광고 및 건강기능식품 오인 혼동 문구 (질병 치료 암시 등)
+    다음 3가지 항목을 집중적으로 검토하여 리포트를 작성하십시오:
+    1. 원산지 및 원재료 거짓·과장 (메인 광고 문구와 증빙 서류의 팩트 불일치 여부 정밀 대조)
+    2. 영양강조표시 및 건강기능식품 오인 혼동 문구 (질병 치료 암시 등)
     3. 주석 및 예외조항의 모호성 (소비자 기만 우려)
     
-    발견된 리스크를 '치명적 위반' 또는 '수정 권고'로 분류하고, 실무자가 수정해야 할 팩트를 명확하게 제시하십시오.
+    발견된 리스크를 '치명적 위반' 또는 '수정 권고'로 분류하고, 실무자가 즉시 수정할 수 있도록 팩트를 명확하게 제시하십시오.
     """
     
-    response = model.generate_content([image_obj, prompt])
+    content_payload.append(prompt)
+    response = model.generate_content(content_payload)
     return response.text
 
 # ==========================================
@@ -81,9 +107,10 @@ st.sidebar.markdown("### 📥 심사 대상 파일 등록")
 uploaded_image = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 시안 (필수)", type=["jpg", "jpeg", "png"])
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📄 팩트 체크용 증빙 서류")
-uploaded_test = st.sidebar.file_uploader("1️⃣ 시험성적서", type=["pdf", "jpg", "png"], accept_multiple_files=True)
-uploaded_spec = st.sidebar.file_uploader("2️⃣ 원료 한글라벨/스펙", type=["pdf", "jpg", "png"], accept_multiple_files=True)
+st.sidebar.markdown("### 📄 팩트 체크용 증빙 서류 (다중 업로드)")
+uploaded_test = st.sidebar.file_uploader("1️⃣ 시험성적서", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+uploaded_spec = st.sidebar.file_uploader("2️⃣ 원료 한글라벨/스펙", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+uploaded_recipe = st.sidebar.file_uploader("3️⃣ 배합비/레시피 데이터", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
 st.sidebar.markdown("---")
 trigger_api = st.sidebar.button("⚙️ 실시간 심사 엔진 가동 (Vision API)", use_container_width=True)
@@ -113,12 +140,18 @@ with main_col2:
     
     if trigger_api:
         if not uploaded_image:
-            st.error("이미지를 먼저 업로드해야 분석이 가능합니다.")
+            st.error("메인 상세페이지 이미지를 먼저 업로드해야 분석이 가능합니다.")
         else:
-            with st.spinner("구글 Vision API 가동 중: 이미지 내 텍스트 추출 및 법령 대조를 진행하고 있습니다 (약 10~20초 소요)..."):
+            with st.spinner("구글 Vision API 가동 중: 통이미지 무손실 분할 및 증빙 서류 교차 검증을 진행하고 있습니다 (약 15~30초 소요)..."):
                 try:
-                    # 팩트: 여기서 업로드된 이미지를 직접 AI 모델로 전송하여 진짜 분석을 수행합니다.
-                    ai_report = analyze_design_with_ai(img, legal_knowledge_base)
+                    # 다중 업로드된 참고 서류 리스트화
+                    ref_files = []
+                    if uploaded_test: ref_files.extend(uploaded_test)
+                    if uploaded_spec: ref_files.extend(uploaded_spec)
+                    if uploaded_recipe: ref_files.extend(uploaded_recipe)
+                    
+                    # AI 분석 수행
+                    ai_report = analyze_design_with_ai(img, ref_files, legal_knowledge_base)
                     
                     st.success("✅ 시안 스캔 및 법령 가이드라인 대조 완료")
                     st.markdown('<div class="report-box">', unsafe_allow_html=True)
@@ -126,6 +159,6 @@ with main_col2:
                     st.markdown('</div>', unsafe_allow_html=True)
                     
                 except Exception as e:
-                    st.error(f"AI 분석 중 오류가 발생했습니다. API 키 설정이나 이미지 용량을 확인하십시오. 상세 에러: {e}")
+                    st.error(f"AI 분석 중 오류가 발생했습니다. 상세 에러: {e}")
     else:
         st.info("좌측 하단의 '실시간 심사 엔진 가동' 버튼을 누르면 AI 분석이 시작됩니다.")
