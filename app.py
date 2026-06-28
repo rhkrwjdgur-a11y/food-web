@@ -52,13 +52,14 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 4. 실시간 AI 비전 분석 로직 (WebP 제한 우회 분할 로직 + 다중 서류 대조)
+# 4. 실시간 AI 비전 분석 로직 (안정적인 gemini-1.5-flash 모델 적용)
 def analyze_design_with_ai(image_obj, ref_files, legal_text):
-    model = genai.GenerativeModel('gemini-1.5-pro')
+    # 팩트: 404 에러 원천 차단 및 멀티모달 고속 처리를 위해 gemini-1.5-flash 모델로 변경
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     content_payload = []
     
-    # 팩트: 메인 상세페이지가 16000px을 넘을 경우 10000px 단위로 자동 분할(Slicing)하여 해상도 100% 보존
+    # 메인 상세페이지가 WebP 포맷 한계선인 16000px을 넘을 경우 10000px 단위로 자동 분할(Slicing)
     width, height = image_obj.size
     max_height = 10000
     
@@ -78,12 +79,12 @@ def analyze_design_with_ai(image_obj, ref_files, legal_text):
                 ref_img = Image.open(ref)
                 content_payload.append(ref_img)
             except:
-                pass # 이미지가 아닌 파일(PDF 등)은 오류 방지를 위해 패스 처리
+                pass 
                 
     prompt = f"""
     당신은 엄격한 품질관리(QC) 및 표시광고 검토 전문가입니다.
     함께 전송된 이미지들은 '메인 상세페이지 시안'과 원산지/배합비 등을 증명하는 '참고 증빙 서류'들입니다.
-    이 이미지들의 텍스트를 정밀 스캔하고, 아래 제공된 식약처 법령 가이드라인과 상호 교차 대조하십시오.
+    이 이미지들의 텍스트를 정밀 스깐하고, 아래 제공된 식약처 법령 가이드라인과 상호 교차 대조하십시오.
     
     [식약처 가이드라인 지식 베이스]
     {legal_text}
@@ -142,15 +143,14 @@ with main_col2:
         if not uploaded_image:
             st.error("메인 상세페이지 이미지를 먼저 업로드해야 분석이 가능합니다.")
         else:
-            with st.spinner("구글 Vision API 가동 중: 통이미지 무손실 분할 및 증빙 서류 교차 검증을 진행하고 있습니다 (약 15~30초 소요)..."):
+            with st.spinner("구글 Vision API 가동 중: 통이미지 무손실 분할 및 증빙 서류 교차 검증을 진행하고 있습니다 (약 5~15초 소요)..."):
                 try:
-                    # 다중 업로드된 참고 서류 리스트화
                     ref_files = []
                     if uploaded_test: ref_files.extend(uploaded_test)
                     if uploaded_spec: ref_files.extend(uploaded_spec)
                     if uploaded_recipe: ref_files.extend(uploaded_recipe)
                     
-                    # AI 분석 수행
+                    # AI 분석 수행 (gemini-1.5-flash 엔진 호출)
                     ai_report = analyze_design_with_ai(img, ref_files, legal_knowledge_base)
                     
                     st.success("✅ 시안 스캔 및 법령 가이드라인 대조 완료")
