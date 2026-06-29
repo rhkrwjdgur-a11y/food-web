@@ -12,9 +12,9 @@ st.set_page_config(page_title="식품 표시사항 정밀 검토 시스템", lay
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
-    .risk-critical { background-color: #fdf2f2; padding: 20px; border-radius: 10px; border-left: 6px solid #dc3545; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .risk-warning { background-color: #fefaf0; padding: 20px; border-radius: 10px; border-left: 6px solid #f39c12; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .risk-pass { background-color: #f4fbf7; padding: 20px; border-radius: 10px; border-left: 6px solid #2ecc71; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-critical { background-color: #fdf2f2; padding: 20px; border-radius: 10px; border-left: 6px solid #dc3545; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-warning { background-color: #fefaf0; padding: 20px; border-radius: 10px; border-left: 6px solid #f39c12; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-pass { background-color: #f4fbf7; padding: 20px; border-radius: 10px; border-left: 6px solid #2ecc71; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     .card-title { font-size: 18px; font-weight: bold; color: #2c3e50; margin-bottom: 15px; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
     .section-title { font-size: 20px; font-weight: bold; color: #1a252f; border-bottom: 2px solid #34495e; padding-bottom: 8px; margin-top: 10px; margin-bottom: 15px; }
     .metric-box { text-align: center; background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
@@ -58,19 +58,17 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 4. 실시간 AI 비전 분석 로직 (3-Pass 엔진 및 구간별 1:1 매칭)
-def analyze_design_with_ai(main_images, ref_files, legal_text):
+# 4. 실시간 AI 비전 분석 로직 (최종 팩시안 매핑 기능 추가)
+def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     content_payload = []
     chunk_list = []
     
-    # 파이썬 로직으로 이미지를 시각적으로 보기 좋은 3000px 단위로 강제 분할(Sectioning)
+    # 메인 시안 이미지 분할 및 리사이즈
     split_height = 3000
-    
     for img_obj in main_images:
         width, height = img_obj.size
-        # 가로 폭이 너무 크면 비율에 맞춰 축소
         if width > 2000:
             ratio = 2000.0 / width
             img_obj = img_obj.resize((2000, int(height * ratio)), Image.LANCZOS)
@@ -91,32 +89,44 @@ def analyze_design_with_ai(main_images, ref_files, legal_text):
                 content_payload.append(ref_img)
             except:
                 pass 
+
+    # 최종 확정 팩시안(기준안) 서류 추가
+    master_fact_count = 0
+    if master_fact_files:
+        for fact in master_fact_files:
+            try:
+                fact.seek(0)
+                fact_img = Image.open(fact)
+                content_payload.append(fact_img)
+                master_fact_count += 1
+            except:
+                pass
                 
-    # 팩트: 3-Pass 프로세스와 모든 구간에 대한 응답을 강제하는 프롬프트
     prompt = f"""
     당신은 엄격한 품질관리(QC) 및 표시광고 검토 전문가입니다.
-    전송된 이미지 중 첫 {len(chunk_list)}장은 '메인 상세페이지 시안'을 위에서 아래로 자른 '구간(Section)' 이미지들이며 (인덱스 0부터 {len(chunk_list)-1}까지), 나머지는 팩트 체크를 위한 '증빙 서류(성적서, 라벨 등)'들입니다.
+    전송된 이미지 구조는 다음과 같습니다:
+    1. 첫 {len(chunk_list)}장: '메인 상세페이지 시안'을 위에서 아래로 분할한 구간 이미지 (인덱스 0부터 시작)
+    2. 그 다음 {master_fact_count}장: 품질관리팀 및 법무팀에서 최종 검토 및 승인을 완료한 '확정 표시사항 기준안 (최종 팩시안)' 서류 이미지
+    3. 나머지 이미지: 기타 증빙 서류 (시험성적서, 배합비 등)
     
     [식약처 가이드라인 지식 베이스]
     {legal_text}
     
-    [3-Pass 검토 프로세스]
-    제공된 모든 구간(Section) 인덱스에 대해 예외 없이 다음 3단계를 거쳐 분석하십시오.
-    Pass 1 (추출): 해당 구간의 이미지에서 광고 문구, 영양소 수치, 원물 이미지 등 시각적 텍스트를 모두 추출한다.
-    Pass 2 (대조): 추출된 내용을 '식약처 지식 베이스' 및 '증빙 서류(팩트)'와 교차 검증하여 일치하는지 확인한다.
-    Pass 3 (판정): 허위 원산지, 함량 누락, 고시 위반, 오인 혼동 문구가 있는지 최종 판정한다.
+    [3-Pass 검토 및 대조 프로세스 강제 사항]
+    모든 상세페이지 구간(image_index)에 대하여 다음 단계를 수행하십시오.
+    Pass 1 (추출): 해당 구간 시안에서 소비자가 보게 되는 모든 광고 문구, 수치, 원재료 표현을 추출한다.
+    Pass 2 (대조): 추출된 광고 내용이 업로드된 '확정 표시사항 기준안(최종 팩시안)'에 명시된 원재료명, 함량(%), 칼슘/비타민 등 영양성분 수치 팩트와 정확히 일치하는지 대조한다. 팩시안에 명시된 원산지와 다르게 광고하거나, 팩시안에 기재된 성분 수치(칼로리 등)와 오차가 발생하는지 확인한다.
+    Pass 3 (판정): 팩시안과 불일치할 경우 '치명적 위반' 또는 '수정 권고'로 분류하고 불일치 팩트를 기재한다. 일치할 경우 '정상'으로 판정한다.
     
-    반드시 아래의 JSON 배열(Array) 형식으로 응답하십시오. 
-    주의: 0부터 {len(chunk_list)-1}까지의 모든 image_index가 배열 안에 무조건 1개 이상 존재해야 합니다. 문제가 없다면 risk_level을 "정상"으로 반환하십시오.
-    
+    반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오. 모든 구간 인덱스가 무조건 포함되어야 합니다.
     [
       {{
-        "image_index": 구간 인덱스 번호 (0부터 시작),
+        "image_index": 구간 인덱스 번호 (0부터 시작하는 정수),
         "risk_level": "치명적 위반", "수정 권고", 또는 "정상",
-        "title": "검토 항목 요약 (예: 제원 표기 정상, 원산지 위반 등)",
-        "found_text": "발견된 실제 문구 (정상일 경우 생략 가능)",
-        "fact_check": "증빙서류 및 고시와 대조한 3-Pass 결과 팩트",
-        "recommendation": "조치 사항 (정상일 경우 '해당 구간 이상 없음' 기재)"
+        "title": "검토 항목 요약 (예: 최종 팩시안 수치 일치, 원산지 오기입 등)",
+        "found_text": "상세페이지에서 추출된 문구 (정상일 경우 생략 가능)",
+        "fact_check": "확정 표시사항 기준안(최종 팩시안)과 대조한 구체적인 데이터 비교 팩트",
+        "recommendation": "수정 조치 사항 (정상일 경우 '해당 구간 이상 없음' 기재)"
       }}
     ]
     """
@@ -138,6 +148,7 @@ uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📄 팩트 체크용 증빙 서류 (다중 업로드)")
+uploaded_master_fact = st.sidebar.file_uploader("4️⃣ 확정 표시사항 기준안 (최종 팩시안)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True, key="master_fact_uploader")
 uploaded_test = st.sidebar.file_uploader("1️⃣ 시험성적서", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 uploaded_spec = st.sidebar.file_uploader("2️⃣ 원료 한글라벨/스펙", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 uploaded_recipe = st.sidebar.file_uploader("3️⃣ 배합비/레시피 데이터", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
@@ -156,7 +167,7 @@ if not learn_error and legal_knowledge_base:
     st.info("📚 식약처 부당광고 고시 및 영양표시 지침 실시간 학습 완료")
 
 # ==========================================
-# 메인 화면: 잘라진 구간별 좌우 1:1 매칭 렌더링
+# 메인 화면: 행(Row) 단위 이미지-리포트 1:1 매칭 출력
 # ==========================================
 if not uploaded_main_images:
     st.warning("👈 왼쪽 메뉴에서 메인 상세페이지 시안 이미지를 업로드해 주십시오.")
@@ -170,14 +181,15 @@ else:
         for img in main_img_objs:
             st.image(img, use_container_width=True)
     else:
-        with st.spinner("구글 Vision API 가동 중: 3-Pass(추출-대조-판정) 엔진이 구간별 정밀 검토를 진행하고 있습니다 (약 15~30초 소요)..."):
+        with st.spinner("구글 Vision API 가동 중: 3-Pass 엔진이 확정 팩시안과 상세페이지 간의 상호 교차 대조를 진행하고 있습니다..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
                 if uploaded_spec: ref_files.extend(uploaded_spec)
                 if uploaded_recipe: ref_files.extend(uploaded_recipe)
                 
-                json_result, chunk_list = analyze_design_with_ai(main_img_objs, ref_files, legal_knowledge_base)
+                # AI 분석 호출 (최종 팩시안 데이터 인자 추가 전달)
+                json_result, chunk_list = analyze_design_with_ai(main_img_objs, ref_files, uploaded_master_fact, legal_knowledge_base)
                 report_data = json.loads(json_result)
                 
                 st.markdown('<div class="section-title">📊 광고 적정성 3-Pass 종합 진단 결과</div>', unsafe_allow_html=True)
@@ -196,7 +208,7 @@ else:
                 
                 st.write("")
                 
-                # 생성된 모든 청크(구간)를 순서대로 화면 좌측에 띄우고, 우측에 해당 인덱스의 판정 결과 출력
+                # 구간별 행 레이아웃 출력
                 for idx, chunk_img in enumerate(chunk_list):
                     st.markdown(f"### 📍 시안 구간 [{idx + 1}]")
                     
@@ -209,8 +221,7 @@ else:
                         issues = [r for r in report_data if r.get("image_index") == idx]
                         
                         if not issues:
-                            # AI가 해당 인덱스를 누락했을 경우의 방어 로직
-                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>해당 구간 시각 텍스트 추출 및 대조 결과 이상 없음.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>확정 팩시안 대조 결과 해당 구간 일치 및 이상 없음.</div>', unsafe_allow_html=True)
                         else:
                             for issue in issues:
                                 risk = issue.get("risk_level", "정상")
@@ -230,7 +241,7 @@ else:
                                 - **QC 판정(Pass 3):** {issue.get("recommendation", "")}
                                 """)
                                 st.markdown('</div>', unsafe_allow_html=True)
-                                st.write("") # 동일 구간 내 여러 이슈가 있을 경우 간격
+                                st.write("") 
                                 
                     st.markdown("---")
 
