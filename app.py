@@ -57,24 +57,20 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 4. 실시간 AI 비전 분석 로직 (다중 메인 이미지 지원 및 JSON 출력)
+# 4. 실시간 AI 비전 분석 로직 (인덱스 매핑 엔진)
 def analyze_design_with_ai(main_images, ref_files, legal_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     content_payload = []
     
-    # 분할된 여러 장의 메인 상세페이지 시안을 모두 페이로드에 추가 (해상도 보존)
+    # AI와 UI의 1:1 매칭을 유지하기 위해 자르기(Crop) 대신 비율 축소(Resize) 방식 적용
     for img_obj in main_images:
         width, height = img_obj.size
-        max_height = 10000
-        
-        if height > 16000:
-            for i in range(0, height, max_height):
-                box = (0, i, width, min(i + max_height, height))
-                chunk = img_obj.crop(box)
-                content_payload.append(chunk)
-        else:
-            content_payload.append(img_obj)
+        # WebP 16383px 한계 돌파를 위한 해상도 최적화
+        if height > 16000 or width > 16000:
+            ratio = 15000.0 / max(width, height)
+            img_obj = img_obj.resize((int(width * ratio), int(height * ratio)), Image.LANCZOS)
+        content_payload.append(img_obj)
             
     # 보조 증빙 서류 추가
     if ref_files:
@@ -88,19 +84,21 @@ def analyze_design_with_ai(main_images, ref_files, legal_text):
                 
     prompt = f"""
     당신은 엄격한 품질관리(QC) 및 표시광고 검토 전문가입니다.
-    전송된 이미지들은 여러 장으로 나뉘어 업로드된 '메인 상세페이지 시안'들과 팩트 체크를 위한 '증빙 서류'들입니다.
+    전송된 이미지 중 첫 {len(main_images)}장은 순서대로 분할 업로드된 '메인 상세페이지 시안' 들이며 (첫 이미지가 인덱스 0번), 나머지는 팩트 체크를 위한 '증빙 서류'들입니다.
     
     [식약처 가이드라인 지식 베이스]
     {legal_text}
     
     다음 항목들을 집중 검토하십시오:
-    1. 원산지/원재료 거짓·과장 (메인 광고와 증빙 서류 팩트 불일치 여부)
-    2. 영양강조표시 누락 및 건강기능식품 오인 혼동 문구
-    3. 예외조항 주석의 모호성
+    1. 영양성분 표시단위 누락 및 필수 영양소 표기 규정 위반 (빙과류 등 가공식품 유형별 필수 고시 준수 여부)
+    2. 원산지/원재료 거짓·과장 (메인 광고와 증빙 서류 팩트 불일치 여부)
+    3. 영양강조표시 누락 및 건강기능식품 오인 혼동 문구
+    4. 예외조항 주석의 모호성
     
-    반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오. (이미지 좌표는 필요 없습니다.)
+    반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
       {{
+        "image_index": 위반이 발견된 메인 상세페이지 시안의 순번 (0부터 시작하는 정수. 첫 번째 업로드 이미지는 0, 두 번째는 1),
         "risk_level": "치명적 위반" 또는 "수정 권고",
         "title": "위반 항목 제목",
         "found_text": "발견된 실제 문제 문구",
@@ -124,7 +122,6 @@ def analyze_design_with_ai(main_images, ref_files, legal_text):
 # 왼쪽 사이드바: 심사 대상 파일 등록
 # ==========================================
 st.sidebar.markdown("### 📥 심사 대상 파일 등록")
-# 팩트: 메인 상세페이지 시안도 (상), (하)로 나뉜 파일을 한 번에 올릴 수 있도록 다중 업로드 허용
 uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 시안 (다중 업로드)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 st.sidebar.markdown("---")
@@ -147,72 +144,86 @@ if not learn_error and legal_knowledge_base:
     st.info("📚 식약처 부당광고 고시 및 영양표시 지침 실시간 학습 완료")
 
 # ==========================================
-# 메인 화면 레이아웃 분할 (좌: 원본 미리보기 / 우: AI 리포트)
+# 메인 화면: 행(Row) 단위 이미지-리포트 1:1 매칭 출력
 # ==========================================
 if not uploaded_main_images:
     st.warning("👈 왼쪽 메뉴에서 메인 상세페이지 시안 이미지를 하나 이상 업로드해 주십시오.")
 else:
-    main_col1, main_col2 = st.columns([1, 1])
-    
-    with main_col1:
-        st.markdown('<div class="section-title">🔍 업로드된 전체 상세페이지 시안</div>', unsafe_allow_html=True)
-        # 여러 장으로 쪼개진 파일들을 순서대로 모두 크게 띄워줌
-        main_img_objs = []
-        for file in uploaded_main_images:
-            img = Image.open(file)
-            main_img_objs.append(img)
-            st.image(img, use_container_width=True)
-
-    with main_col2:
-        st.markdown('<div class="section-title">📊 광고 적정성 종합 진단 결과</div>', unsafe_allow_html=True)
+    main_img_objs = []
+    for file in uploaded_main_images:
+        img = Image.open(file)
+        main_img_objs.append(img)
         
-        if not trigger_api:
-            st.info("좌측 하단의 '실시간 심사 엔진 가동' 버튼을 누르면 AI 분석이 시작됩니다.")
-        else:
-            with st.spinner("구글 Vision API 가동 중: 정밀 스캔 및 팩트 대조를 진행하고 있습니다 (약 10~20초 소요)..."):
-                try:
-                    ref_files = []
-                    if uploaded_test: ref_files.extend(uploaded_test)
-                    if uploaded_spec: ref_files.extend(uploaded_spec)
-                    if uploaded_recipe: ref_files.extend(uploaded_recipe)
+    if not trigger_api:
+        st.info("좌측 하단의 '실시간 심사 엔진 가동' 버튼을 누르면 AI 분석이 시작됩니다.")
+        # 가동 전에는 원본 이미지만 세로로 보여줌
+        for img in main_img_objs:
+            st.image(img, use_container_width=True)
+    else:
+        with st.spinner("구글 Vision API 가동 중: 정밀 스캔 및 팩트 대조를 진행하고 있습니다 (약 10~20초 소요)..."):
+            try:
+                ref_files = []
+                if uploaded_test: ref_files.extend(uploaded_test)
+                if uploaded_spec: ref_files.extend(uploaded_spec)
+                if uploaded_recipe: ref_files.extend(uploaded_recipe)
+                
+                json_result = analyze_design_with_ai(main_img_objs, ref_files, legal_knowledge_base)
+                report_data = json.loads(json_result)
+                
+                st.markdown('<div class="section-title">📊 광고 적정성 종합 진단 결과</div>', unsafe_allow_html=True)
+                
+                if not report_data:
+                    st.success("✅ 심사 완료: 식약처 고시 위반 및 증빙 서류 불일치 리스크가 발견되지 않았습니다.")
+                    for img in main_img_objs:
+                        st.image(img, use_container_width=True)
+                else:
+                    # 요약 지표 계산 및 출력
+                    critical_cnt = sum(1 for r in report_data if r.get("risk_level") == "치명적 위반")
+                    warning_cnt = sum(1 for r in report_data if r.get("risk_level") == "수정 권고")
                     
-                    json_result = analyze_design_with_ai(main_img_objs, ref_files, legal_knowledge_base)
-                    report_data = json.loads(json_result)
+                    stat_c1, stat_c2, stat_c3 = st.columns(3)
+                    with stat_c1:
+                        st.markdown(f'<div class="metric-box">🚨 치명적 위반 <br><span class="metric-num" style="color:#dc3545;">{critical_cnt}건</span></div>', unsafe_allow_html=True)
+                    with stat_c2:
+                        st.markdown(f'<div class="metric-box">⚠️ 수정 권고 <br><span class="metric-num" style="color:#f39c12;">{warning_cnt}건</span></div>', unsafe_allow_html=True)
+                    with stat_c3:
+                        st.markdown(f'<div class="metric-box">✅ 검토 완료 <br><span class="metric-num" style="color:#2ecc71;">완료</span></div>', unsafe_allow_html=True)
                     
-                    if not report_data:
-                        st.success("✅ 심사 완료: 식약처 고시 위반 및 증빙 서류 불일치 리스크가 발견되지 않았습니다.")
-                    else:
-                        critical_cnt = sum(1 for r in report_data if r.get("risk_level") == "치명적 위반")
-                        warning_cnt = sum(1 for r in report_data if r.get("risk_level") == "수정 권고")
+                    st.write("")
+                    
+                    # 각 업로드된 조각 이미지별로 행(Row)을 생성하여 해당 리포트를 바로 옆에 나란히 출력
+                    for idx, img_obj in enumerate(main_img_objs):
+                        st.markdown(f"### 📍 시안 구간 [{idx + 1}] 검토 리포트")
                         
-                        stat_c1, stat_c2, stat_c3 = st.columns(3)
-                        with stat_c1:
-                            st.markdown(f'<div class="metric-box">🚨 치명적 위반 <br><span class="metric-num" style="color:#dc3545;">{critical_cnt}건</span></div>', unsafe_allow_html=True)
-                        with stat_c2:
-                            st.markdown(f'<div class="metric-box">⚠️ 수정 권고 <br><span class="metric-num" style="color:#f39c12;">{warning_cnt}건</span></div>', unsafe_allow_html=True)
-                        with stat_c3:
-                            st.markdown(f'<div class="metric-box">✅ 검토 완료 <br><span class="metric-num" style="color:#2ecc71;">완료</span></div>', unsafe_allow_html=True)
+                        row_col1, row_col2 = st.columns([1, 1])
                         
-                        st.write("")
-                        st.markdown("### 🎯 적발 구역별 상세 리포트")
-                        st.write("")
-                        
-                        # 지저분한 크롭 로직을 제거하고, 텍스트 카드만 시원하게 출력
-                        for issue in report_data:
-                            risk = issue.get("risk_level", "수정 권고")
-                            css_class = "risk-critical" if risk == "치명적 위반" else "risk-warning"
-                            icon = "❌" if risk == "치명적 위반" else "⚠️"
+                        with row_col1:
+                            st.image(img_obj, use_container_width=True)
                             
-                            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-                            st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
-                            st.markdown(f"""
-                            - **스캔된 적발 문구:** {issue.get("found_text", "")}
-                            - **팩트 교차 검증:** {issue.get("fact_check", "")}
-                            - **QC 실무 조치 사항:** {issue.get("recommendation", "")}
-                            """)
-                            st.markdown('</div>', unsafe_allow_html=True)
+                        with row_col2:
+                            # 해당 이미지 인덱스에 속하는 리포트만 필터링
+                            issues = [r for r in report_data if r.get("image_index") == idx]
+                            
+                            if not issues:
+                                st.success("✅ 이 구간에서는 식약처 고시 위반 및 리스크가 발견되지 않았습니다.")
+                            else:
+                                for issue in issues:
+                                    risk = issue.get("risk_level", "수정 권고")
+                                    css_class = "risk-critical" if risk == "치명적 위반" else "risk-warning"
+                                    icon = "❌" if risk == "치명적 위반" else "⚠️"
+                                    
+                                    st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+                                    st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
+                                    st.markdown(f"""
+                                    - **스캔된 적발 문구:** {issue.get("found_text", "")}
+                                    - **팩트 교차 검증:** {issue.get("fact_check", "")}
+                                    - **QC 실무 조치 사항:** {issue.get("recommendation", "")}
+                                    """)
+                                    st.markdown('</div>', unsafe_allow_html=True)
+                                    
+                        st.markdown("---")
 
-                except json.JSONDecodeError:
-                    st.error("AI 응답을 구조화하는 데 실패했습니다. 시스템 로그를 확인해 주십시오.")
-                except Exception as e:
-                    st.error(f"AI 분석 중 오류가 발생했습니다. 상세 에러: {e}")
+            except json.JSONDecodeError:
+                st.error("AI 응답을 구조화하는 데 실패했습니다. 시스템 로그를 확인해 주십시오.")
+            except Exception as e:
+                st.error(f"AI 분석 중 오류가 발생했습니다. 상세 에러: {e}")
