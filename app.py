@@ -24,7 +24,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. API 키 설정 (Vision API & 식약처 DB API)
+# 2. API 키 설정
 try:
     genai.configure(api_key=st.secrets["AI_VISION_API_KEY"])
     FOOD_API_KEY = st.secrets["FOOD_SAFETY_API_KEY"]
@@ -61,7 +61,7 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB(I2790) 호출 함수
+# 3-2. 식약처 영양성분 DB 호출 함수
 def query_food_nutrient_db(food_name):
     if not food_name:
         return None
@@ -77,7 +77,7 @@ def query_food_nutrient_db(food_name):
     except Exception:
         return None
 
-# 4. 실시간 AI 비전 분석 로직 (내부 모순 스캔 및 타 식품 비교 룰 강화)
+# 4. 실시간 AI 비전 분석 로직 (범용적 QC 룰셋 탑재)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
@@ -120,38 +120,39 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
                 
     prompt = f"""
     당신은 엄격한 품질관리(QC) 전문가이자 법적 규제 준수(Compliance) 검토자입니다.
-    전송된 이미지 구조는 다음과 같습니다:
-    1. 첫 {len(chunk_list)}장: 마케팅 부서가 기획한 '상세페이지 시안' 구간 이미지 (인덱스 0부터 시작)
-    2. 그 다음 {master_fact_count}장: 품질관리팀이 승인한 '확정 팩시안(패키지 전개도, 한글표시사항)'
-    3. 나머지: 기타 증빙 서류
+    이 시스템은 특정 제품에 국한되지 않고, 모든 종류의 식품 패키지 및 상세페이지 검토에 적용되는 범용적인 잣대를 사용합니다.
     
-    [식약처 법령 및 가이드라인 지식 베이스]
+    [식약처 법령 및 지식 베이스]
     {legal_text}
     
-    [실시간 국가 공인 영양성분 DB 다중 검색 결과]
+    [실시간 국가 공인 영양성분 DB]
     {db_context_text if db_context_text else "검색된 외부 DB 데이터 없음."}
     
-    [법적 리스크 및 팩트 대조 절대 룰 - 환각(Hallucination) 영구 차단]
-    Rule 1 (시각적 팩트 절대주의): 팩시안이나 식약처 DB의 텍스트를 눈으로 확인한 내용만 기재하십시오.
+    [범용적 식품 QC 대원칙 - 위반 시 시스템 오류 발생]
+    🔥 Rule 1 (인덱스 위치 1:1 강제 매핑): 발견된 위반 사항이 위치한 실제 쪼개진 시안 조각의 인덱스 번호(0부터 시작)를 정확히 할당하십시오.
     
-    🔥 Rule 2 (상세페이지 내부 모순 철저 스캔 - 신규): 상세페이지 전체를 통틀어, 상단 마케팅 이미지에 기재된 수치(예: 칼로리 150kcal, 단백질 4g 등)와 하단 고시 영역의 '영양정보표'에 기재된 수치(예: 칼로리 155kcal 등)가 서로 충돌하거나 오기입되어 있지 않은지 반드시 교차 대조하십시오. 상세페이지 내부에서 팩트 불일치가 발생하면 '치명적 위반'으로 적발하십시오.
+    🔥 Rule 2 (문서 내 상반성 교차 검증): 단일 상세페이지 문서 내에서, 마케팅을 위해 상단에 크고 화려하게 표기된 수치/성분명과 하단에 의무적으로 기재된 '정보표시면(고시표)'의 수치/성분명이 서로 모순되거나 불일치하는지 확인하여 적발하십시오.
     
-    🔥 Rule 3 (비교광고 식약처 DB 정밀 타격 - 신규): 상세페이지에 "소고기, 닭고기, 콩 등 타 식품과 단백질/영양소를 비교하는 내용"이 기재되어 있다면, 당신에게 제공된 [실시간 국가 공인 영양성분 DB 다중 검색 결과]의 100g당 팩트 수치와 상세페이지 시안 속 수치를 1:1로 정밀하게 비교하십시오. 마케팅 시안이 식약처 DB 수치와 단 0.1이라도 다르거나 유리하게 왜곡했다면 '치명적 위반(거짓/과장 광고)'으로 강력히 적발하십시오.
+    🔥 Rule 3 (텍스트 1:1 무결성 스캔): 상세페이지 하단의 원재료명, 알레르기 유발물질, 주의사항 텍스트를 '확정 팩시안(원본)'과 한 글자 단위로 대조하십시오. 누락된 성분, 조사나 어미의 변형, 획이 잘못된 오탈자 등을 무조건 색출하십시오.
     
-    Rule 4 (팩시안 투트랙 검증): 마케팅 문구의 내용이 '확정 팩시안' 원재료명과 충돌하는지 확인하고, [식약처 법령 지식 베이스]의 부당광고 기준 위반 여부를 검토하십시오.
+    🔥 Rule 4 (비교 광고 수치 정밀 타격): 시안 내에 타 식품군(예: 육류, 타사 제품 등)과 영양성분을 비교하는 내용이 존재한다면, [실시간 국가 공인 영양성분 DB]의 수치 기준과 소수점 단위까지 일치하는지 수학적으로 검증하십시오.
+    
+    🔥 Rule 5 (연출 이미지 법적 방어 스캔): 시안 내에 조리된 상태나 그릇에 담긴 형태 등 소비자의 식욕을 돋우기 위한 '연출 사진(Stylized Photography)'이 포함되어 있다면, 그 사진 주변에 '연출된 이미지', '이미지 예' 등의 면책 문구가 기재되어 있는지 확인하십시오. 없다면 기만행위 예방을 위해 '수정 권고' 조치하십시오.
+    
+    🔥 Rule 6 (마케팅 수식어 법률 현미경): '100%', '무첨가', '순수' 등의 범용적 마케팅 강조 수식어가 원재료 팩트 및 [식약처 법령 지식 베이스]에 저촉되는 기만행위인지 판단하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
       {{
-        "image_index": 구간 인덱스 번호 (0부터 시작),
+        "image_index": 위반 사항이 발견된 정확한 구간 인덱스 번호 (0부터 시작),
         "risk_level": "치명적 위반", "수정 권고", 또는 "정상",
-        "title": "검토 항목 요약 (예: 시안 내부 칼로리 표기 불일치, DB 비교광고 수치 불일치 등)",
-        "marketing_text": "상세페이지에서 추출한 마케팅 텍스트 또는 표 수치 원문",
-        "fact_or_legal_ground": "확정 팩시안 원문, 식약처 DB 데이터 수치, 또는 상세페이지 내 상반되는 다른 수치",
-        "discrepancy_analysis": "명확한 팩트 기반의 불일치 분석(시안 내부 모순 또는 DB와의 충돌 등) 및 수정 지시 내용"
+        "title": "검토 항목 요약 (범용 기준)",
+        "marketing_text": "상세페이지에서 추출한 문제의 텍스트 또는 이미지 특징 (정상일 경우 생략 가능)",
+        "fact_or_legal_ground": "팩시안 원문, 외부 DB, 또는 적용된 법적 가이드라인 (정상일 경우 생략 가능)",
+        "discrepancy_analysis": "위반 사항 분석 및 QC 실무 조치 사항"
       }}
     ]
-    위반 사항이 없다면 risk_level을 "정상"으로 반환하고 discrepancy_analysis에 '해당 구간 법적 테두리 내 팩트 확인 완료'라고 기재하십시오.
+    위반 사항이 없다면 risk_level을 "정상"으로 반환하고 discrepancy_analysis에 '해당 구간 범용 법적 테두리 및 팩트 확인 완료'라고 기재하십시오.
     """
     
     content_payload.append(prompt)
@@ -216,7 +217,7 @@ else:
         for img in main_img_objs:
             st.image(img, use_container_width=True)
     else:
-        with st.spinner("구글 Vision API 가동 중: 상세페이지 자체 모순 및 식약처 DB 비교광고 대조를 진행하고 있습니다..."):
+        with st.spinner("구글 Vision API 가동 중: 범용 QC 룰셋을 기반으로 전방위 팩트 스캔을 진행하고 있습니다..."):
             try:
                 db_context_text = ""
                 if db_search_keyword:
@@ -266,7 +267,7 @@ else:
                         issues = [r for r in report_data if r.get("image_index") == idx]
                         
                         if not issues:
-                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>해당 구간 법적 테두리 내 팩트 확인 완료.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>해당 구간 범용 법적 테두리 및 팩트 확인 완료.</div>', unsafe_allow_html=True)
                         else:
                             for issue in issues:
                                 risk = issue.get("risk_level", "정상")
@@ -281,8 +282,8 @@ else:
                                 st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
                                 st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
                                 st.markdown(f"""
-                                - **상세페이지 원문:** {issue.get("marketing_text", "-")}
-                                - **팩트/DB/법령 근거:** {issue.get("fact_or_legal_ground", "-")}
+                                - **상세페이지 상태:** {issue.get("marketing_text", "-")}
+                                - **QC 대조 기준:** {issue.get("fact_or_legal_ground", "-")}
                                 - **분석 및 조치:** {issue.get("discrepancy_analysis", "")}
                                 """)
                                 st.markdown('</div>', unsafe_allow_html=True)
