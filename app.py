@@ -58,14 +58,14 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 4. 실시간 AI 비전 분석 로직 (최종 팩시안 매핑 기능 추가)
+# 4. 실시간 AI 비전 분석 로직 (프롬프트 초정밀 검수 룰 추가)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     content_payload = []
     chunk_list = []
     
-    # 메인 시안 이미지 분할 및 리사이즈
+    # 메인 시안 이미지 분할
     split_height = 3000
     for img_obj in main_images:
         width, height = img_obj.size
@@ -106,27 +106,31 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     당신은 엄격한 품질관리(QC) 및 표시광고 검토 전문가입니다.
     전송된 이미지 구조는 다음과 같습니다:
     1. 첫 {len(chunk_list)}장: '메인 상세페이지 시안'을 위에서 아래로 분할한 구간 이미지 (인덱스 0부터 시작)
-    2. 그 다음 {master_fact_count}장: 품질관리팀 및 법무팀에서 최종 검토 및 승인을 완료한 '확정 표시사항 기준안 (최종 팩시안)' 서류 이미지
-    3. 나머지 이미지: 기타 증빙 서류 (시험성적서, 배합비 등)
+    2. 그 다음 {master_fact_count}장: 품질관리팀 및 법무팀에서 최종 승인한 '확정 표시사항 기준안 (최종 팩시안)'
+    3. 나머지 이미지: 기타 증빙 서류
     
     [식약처 가이드라인 지식 베이스]
     {legal_text}
     
-    [3-Pass 검토 및 대조 프로세스 강제 사항]
-    모든 상세페이지 구간(image_index)에 대하여 다음 단계를 수행하십시오.
-    Pass 1 (추출): 해당 구간 시안에서 소비자가 보게 되는 모든 광고 문구, 수치, 원재료 표현을 추출한다.
-    Pass 2 (대조): 추출된 광고 내용이 업로드된 '확정 표시사항 기준안(최종 팩시안)'에 명시된 원재료명, 함량(%), 칼슘/비타민 등 영양성분 수치 팩트와 정확히 일치하는지 대조한다. 팩시안에 명시된 원산지와 다르게 광고하거나, 팩시안에 기재된 성분 수치(칼로리 등)와 오차가 발생하는지 확인한다.
-    Pass 3 (판정): 팩시안과 불일치할 경우 '치명적 위반' 또는 '수정 권고'로 분류하고 불일치 팩트를 기재한다. 일치할 경우 '정상'으로 판정한다.
+    [초정밀 팩트 체크 및 대조 강제 룰 - 반드시 준수할 것]
+    Rule 1 (수치 완전 일치): 상세페이지 내에서 마케팅용으로 강조된 수치(칼로리, 영양성분, 함량%)와 하단 '영양정보표', 그리고 '최종 팩시안'의 수치가 단 1이라도 불일치하면 무조건 '치명적 위반'으로 적발하십시오. (예: 광고는 150kcal인데 하단 표는 155kcal인 경우)
+    Rule 2 (오탈자 정밀 스캔): 상품정보제공고시, 원재료명, 주의사항 텍스트에서 발생하는 오탈자를 한 글자 단위로 색출하십시오. (예: '과당'을 '과딩'으로, '우베파우더'를 '우네파우더'로, '메밀'을 '메일'로 잘못 기재한 경우 등)
+    Rule 3 (알레르기 교차오염 중복 표기 금지): 제품 원재료에 이미 투입되어 '함유'로 적힌 알레르기 유발물질(예: 우유, 대두 등)이 "본 제품은 OO를 사용한 제품과 같은 제조시설에서 제조하고 있습니다"라는 주의 문구에 또다시 중복 기재되어 있다면 '수정 권고'로 적발하십시오.
+    Rule 4 (원산지 및 성분 거짓광고): 메인 광고 문구와 증빙 서류 간 원산지나 배합비가 불일치하는지 대조하십시오.
+    Rule 5 (기만 행위): 특정 원물 이미지를 크게 강조하고 함량(%)을 누락했거나, 건강기능식품으로 오인할 문구가 있는지 검토하십시오.
     
-    반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오. 모든 구간 인덱스가 무조건 포함되어야 합니다.
+    [3-Pass 검토 프로세스]
+    모든 구간(image_index)에 대하여 추출(Pass 1), 팩트 대조(Pass 2), 판정(Pass 3)을 수행하십시오.
+    
+    반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오. 모든 구간 인덱스가 포함되어야 합니다.
     [
       {{
         "image_index": 구간 인덱스 번호 (0부터 시작하는 정수),
         "risk_level": "치명적 위반", "수정 권고", 또는 "정상",
-        "title": "검토 항목 요약 (예: 최종 팩시안 수치 일치, 원산지 오기입 등)",
-        "found_text": "상세페이지에서 추출된 문구 (정상일 경우 생략 가능)",
-        "fact_check": "확정 표시사항 기준안(최종 팩시안)과 대조한 구체적인 데이터 비교 팩트",
-        "recommendation": "수정 조치 사항 (정상일 경우 '해당 구간 이상 없음' 기재)"
+        "title": "검토 항목 요약 (예: 수치 불일치, 오탈자 발견, 알레르기 표기 위반 등)",
+        "found_text": "상세페이지에서 추출된 문제 문구 (정상일 경우 생략 가능)",
+        "fact_check": "확정 표시사항 기준안(최종 팩시안) 및 강제 룰과 대조한 팩트 결과",
+        "recommendation": "즉시 수정해야 할 실무 조치 사항"
       }}
     ]
     """
@@ -181,14 +185,13 @@ else:
         for img in main_img_objs:
             st.image(img, use_container_width=True)
     else:
-        with st.spinner("구글 Vision API 가동 중: 3-Pass 엔진이 확정 팩시안과 상세페이지 간의 상호 교차 대조를 진행하고 있습니다..."):
+        with st.spinner("구글 Vision API 가동 중: 초정밀 팩트 체크 룰에 따라 오탈자 및 수치 대조를 진행하고 있습니다..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
                 if uploaded_spec: ref_files.extend(uploaded_spec)
                 if uploaded_recipe: ref_files.extend(uploaded_recipe)
                 
-                # AI 분석 호출 (최종 팩시안 데이터 인자 추가 전달)
                 json_result, chunk_list = analyze_design_with_ai(main_img_objs, ref_files, uploaded_master_fact, legal_knowledge_base)
                 report_data = json.loads(json_result)
                 
@@ -208,7 +211,6 @@ else:
                 
                 st.write("")
                 
-                # 구간별 행 레이아웃 출력
                 for idx, chunk_img in enumerate(chunk_list):
                     st.markdown(f"### 📍 시안 구간 [{idx + 1}]")
                     
