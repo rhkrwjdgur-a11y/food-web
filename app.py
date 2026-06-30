@@ -61,7 +61,7 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB(I2790) 호출 함수 추가
+# 3-2. 식약처 영양성분 DB(I2790) 호출 함수
 def query_food_nutrient_db(food_name):
     if not food_name:
         return None
@@ -77,7 +77,7 @@ def query_food_nutrient_db(food_name):
     except Exception:
         return None
 
-# 4. 실시간 AI 비전 분석 로직 (식약처 DB 컨텍스트 통합)
+# 4. 실시간 AI 비전 분석 로직
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
@@ -128,14 +128,14 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     [식약처 법령 및 가이드라인 지식 베이스]
     {legal_text}
     
-    [실시간 국가 공인 영양성분 DB 검색 결과]
+    [실시간 국가 공인 영양성분 DB 다중 검색 결과]
     {db_context_text if db_context_text else "검색된 외부 DB 데이터 없음."}
     
     [법적 리스크 및 팩트 대조 절대 룰 - 환각(Hallucination) 영구 차단]
-    Rule 1 (시각적 팩트 절대주의): 확정 팩시안의 텍스트를 눈으로 확인한 내용만 기재하십시오. 
+    Rule 1 (시각적 팩트 절대주의): 팩시안이나 식약처 DB의 텍스트를 눈으로 확인한 내용만 기재하십시오. 
     Rule 2 (투트랙 검증 엄수): Track 1(마케팅 문구와 팩시안 수치 100% 일치 여부), Track 2(식약처 부당광고 기준 위반 여부)를 모두 스캔하십시오.
     
-    🔥 Rule 3 (비교광고 식약처 DB 철저 검증): 마케팅 문구에서 "소고기보다 단백질이 높다", "우유 칼슘의 X배" 등 타 식품과 비교하는 문구가 있다면, 위 [실시간 국가 공인 영양성분 DB 검색 결과]의 100g당 수치와 비교하여 정확한 수학적 팩트 체크를 진행하십시오. 수치가 과장되었거나 거짓이라면 '치명적 위반(부당한 비교 광고)'으로 적발하십시오.
+    🔥 Rule 3 (비교광고 식약처 DB 철저 검증 - 다중 대상 포함): 상세페이지에 "소고기, 닭고기, 콩(대두) 등 타 식품군과 자사 제품의 영양성분(예: 단백질)을 비교하는 그래프나 텍스트"가 있고, 그 출처로 '식품안전나라(식약처 DB)'를 기재했다면, 위 [실시간 국가 공인 영양성분 DB 다중 검색 결과]의 수치와 상세페이지에 적힌 숫자를 소수점까지 1:1 대조하십시오. 비교 단위(예: 100g 당)가 맞는지, 마케팅 시안의 숫자가 국가 DB 데이터를 자의적으로 부풀리거나 왜곡하지 않았는지 팩트 체크하여, 수치가 틀리면 '치명적 위반(부당한 비교 광고)'으로 적발하십시오.
     
     🔥 Rule 4 (마케팅 수식어 법적 현미경 검증): 마케팅 부서가 사용한 '순수', '100%', '무첨가', '프리미엄' 등의 수식어가 확정 팩시안의 원재료명과 충돌하여 기만행위에 해당하는지 검토하십시오.
     
@@ -145,12 +145,12 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
         "image_index": 구간 인덱스 번호 (0부터 시작),
         "risk_level": "치명적 위반", "수정 권고", 또는 "정상",
         "title": "검토 항목 요약",
-        "marketing_text": "상세페이지에서 추출한 마케팅 텍스트 원문",
+        "marketing_text": "상세페이지에서 추출한 마케팅 텍스트 원문 (정상일 경우 생략 가능)",
         "fact_or_legal_ground": "확정 팩시안, 식약처 DB 데이터, 또는 법령 지식베이스에서 발췌한 팩트 근거 원문",
-        "discrepancy_analysis": "마케팅 문구의 법적 규제 위반 사항 또는 식약처 DB와의 수치 불일치 분석 및 수정 지시 내용"
+        "discrepancy_analysis": "마케팅 문구의 법적 규제 위반 사항 또는 식약처 DB 수치와의 불일치 분석 및 수정 지시 내용"
       }}
     ]
-    위반 사항이 없다면 risk_level을 "정상"으로 반환하고 discrepancy_analysis에 '해당 구간 법적 테두리 내 마케팅 문구 확인 완료'라고 기재하십시오.
+    위반 사항이 없다면 risk_level을 "정상"으로 반환하고 discrepancy_analysis에 '해당 구간 법적 테두리 내 마케팅 문구 및 팩트 확인 완료'라고 기재하십시오.
     """
     
     content_payload.append(prompt)
@@ -177,9 +177,9 @@ st.sidebar.markdown("### 📥 심사 대상 파일 등록")
 uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 시안 (다중 업로드)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔍 식약처 영양성분 DB 실시간 자동 연동")
-# 비교 광고 검증을 위한 DB 검색 인풋 추가
-db_search_keyword = st.sidebar.text_input("상세페이지 내 비교 대상 식품명 입력", help="예: 소고기, 닭가슴살, 우유 등 (입력 시 API 자동 호출)")
+st.sidebar.markdown("### 🔍 식약처 영양성분 DB 실시간 자동 연동 (다중 검색)")
+# 팩트: 쉼표(,)를 통해 여러 개의 타겟 식품을 한 번에 API 호출할 수 있도록 기능 업그레이드
+db_search_keyword = st.sidebar.text_input("상세페이지 내 비교 대상 식품명 입력", help="쉼표(,)로 구분하여 여러 개 입력 가능. 예: 소고기, 닭고기, 대두")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📄 팩트 체크용 증빙 서류 (다중 업로드)")
@@ -218,22 +218,24 @@ else:
     else:
         with st.spinner("구글 Vision API 가동 중: 마케팅 문구를 법적 테두리 및 식약처 DB 표준 데이터와 정밀 대조하고 있습니다..."):
             try:
-                # 식약처 API 동적 호출
+                # 식약처 API 다중 동적 호출 
                 db_context_text = ""
                 if db_search_keyword:
-                    db_data = query_food_nutrient_db(db_search_keyword)
-                    if db_data:
-                        db_context_text = f"검색어 '{db_search_keyword}'에 대한 식약처 데이터:\n" + json.dumps(db_data, ensure_ascii=False)
-                        st.sidebar.success(f"✅ 식약처 DB '{db_search_keyword}' 데이터 연동 완료")
-                    else:
-                        st.sidebar.error(f"❌ 식약처 DB에서 '{db_search_keyword}' 데이터를 찾을 수 없습니다.")
+                    keywords = [k.strip() for k in db_search_keyword.split(",")]
+                    for kw in keywords:
+                        if kw:
+                            db_data = query_food_nutrient_db(kw)
+                            if db_data:
+                                db_context_text += f"\n[검색어 '{kw}'에 대한 식약처 공인 데이터]\n" + json.dumps(db_data, ensure_ascii=False) + "\n"
+                                st.sidebar.success(f"✅ 식약처 DB '{kw}' 데이터 연동 완료")
+                            else:
+                                st.sidebar.error(f"❌ 식약처 DB에서 '{kw}' 데이터를 찾을 수 없습니다.")
 
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
                 if uploaded_spec: ref_files.extend(uploaded_spec)
                 if uploaded_recipe: ref_files.extend(uploaded_recipe)
                 
-                # DB 데이터를 포함하여 AI 호출
                 json_result, chunk_list = analyze_design_with_ai(main_img_objs, ref_files, uploaded_master_fact, legal_knowledge_base, db_context_text)
                 report_data = json.loads(json_result)
                 
@@ -265,7 +267,7 @@ else:
                         issues = [r for r in report_data if r.get("image_index") == idx]
                         
                         if not issues:
-                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>해당 구간 법적 테두리 내 마케팅 문구 확인 완료.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>해당 구간 법적 테두리 내 마케팅 문구 및 팩트 확인 완료.</div>', unsafe_allow_html=True)
                         else:
                             for issue in issues:
                                 risk = issue.get("risk_level", "정상")
