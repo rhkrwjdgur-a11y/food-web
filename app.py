@@ -4,6 +4,7 @@ from PIL import Image
 import os
 import PyPDF2
 import json
+import time
 
 # 1. 기본 페이지 설정
 st.set_page_config(page_title="식품 표시사항 정밀 검토 시스템", layout="wide")
@@ -12,9 +13,9 @@ st.set_page_config(page_title="식품 표시사항 정밀 검토 시스템", lay
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
-    .risk-critical { background-color: #fdf2f2; padding: 20px; border-radius: 10px; border-left: 6px solid #dc3545; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .risk-warning { background-color: #fefaf0; padding: 20px; border-radius: 10px; border-left: 6px solid #f39c12; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .risk-pass { background-color: #f4fbf7; padding: 20px; border-radius: 10px; border-left: 6px solid #2ecc71; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-critical { background-color: #fdf2f2; padding: 20px; border-radius: 10px; border-left: 6px solid #dc3545; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-warning { background-color: #fefaf0; padding: 20px; border-radius: 10px; border-left: 6px solid #f39c12; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-pass { background-color: #f4fbf7; padding: 20px; border-radius: 10px; border-left: 6px solid #2ecc71; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     .card-title { font-size: 18px; font-weight: bold; color: #2c3e50; margin-bottom: 15px; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
     .section-title { font-size: 20px; font-weight: bold; color: #1a252f; border-bottom: 2px solid #34495e; padding-bottom: 8px; margin-top: 10px; margin-bottom: 15px; }
     .metric-box { text-align: center; background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
@@ -58,14 +59,13 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 4. 실시간 AI 비전 분석 로직 (프롬프트 초정밀 검수 룰 추가)
+# 4. 실시간 AI 비전 분석 로직 (429 과부하 방지 Retry 엔진 탑재)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     content_payload = []
     chunk_list = []
     
-    # 메인 시안 이미지 분할
     split_height = 3000
     for img_obj in main_images:
         width, height = img_obj.size
@@ -80,7 +80,6 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
             chunk_list.append(chunk)
             content_payload.append(chunk)
             
-    # 보조 증빙 서류 추가
     if ref_files:
         for ref in ref_files:
             try:
@@ -90,7 +89,6 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
             except:
                 pass 
 
-    # 최종 확정 팩시안(기준안) 서류 추가
     master_fact_count = 0
     if master_fact_files:
         for fact in master_fact_files:
@@ -113,9 +111,9 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     {legal_text}
     
     [초정밀 팩트 체크 및 대조 강제 룰 - 반드시 준수할 것]
-    Rule 1 (수치 완전 일치): 상세페이지 내에서 마케팅용으로 강조된 수치(칼로리, 영양성분, 함량%)와 하단 '영양정보표', 그리고 '최종 팩시안'의 수치가 단 1이라도 불일치하면 무조건 '치명적 위반'으로 적발하십시오. (예: 광고는 150kcal인데 하단 표는 155kcal인 경우)
-    Rule 2 (오탈자 정밀 스캔): 상품정보제공고시, 원재료명, 주의사항 텍스트에서 발생하는 오탈자를 한 글자 단위로 색출하십시오. (예: '과당'을 '과딩'으로, '우베파우더'를 '우네파우더'로, '메밀'을 '메일'로 잘못 기재한 경우 등)
-    Rule 3 (알레르기 교차오염 중복 표기 금지): 제품 원재료에 이미 투입되어 '함유'로 적힌 알레르기 유발물질(예: 우유, 대두 등)이 "본 제품은 OO를 사용한 제품과 같은 제조시설에서 제조하고 있습니다"라는 주의 문구에 또다시 중복 기재되어 있다면 '수정 권고'로 적발하십시오.
+    Rule 1 (수치 완전 일치): 상세페이지 내에서 마케팅용으로 강조된 수치(칼로리, 영양성분, 함량%)와 하단 '영양정보표', 그리고 '최종 팩시안'의 수치가 단 1이라도 불일치하면 무조건 '치명적 위반'으로 적발하십시오.
+    Rule 2 (오탈자 정밀 스캔): 상품정보제공고시, 원재료명, 주의사항 텍스트에서 발생하는 오탈자를 한 글자 단위로 색출하십시오.
+    Rule 3 (알레르기 교차오염 중복 표기 금지): 제품 원재료에 이미 투입되어 '함유'로 적힌 알레르기 유발물질이 교차오염 주의 문구에 중복 기재되어 있다면 '수정 권고'로 적발하십시오.
     Rule 4 (원산지 및 성분 거짓광고): 메인 광고 문구와 증빙 서류 간 원산지나 배합비가 불일치하는지 대조하십시오.
     Rule 5 (기만 행위): 특정 원물 이미지를 크게 강조하고 함량(%)을 누락했거나, 건강기능식품으로 오인할 문구가 있는지 검토하십시오.
     
@@ -127,7 +125,7 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
       {{
         "image_index": 구간 인덱스 번호 (0부터 시작하는 정수),
         "risk_level": "치명적 위반", "수정 권고", 또는 "정상",
-        "title": "검토 항목 요약 (예: 수치 불일치, 오탈자 발견, 알레르기 표기 위반 등)",
+        "title": "검토 항목 요약",
         "found_text": "상세페이지에서 추출된 문제 문구 (정상일 경우 생략 가능)",
         "fact_check": "확정 표시사항 기준안(최종 팩시안) 및 강제 룰과 대조한 팩트 결과",
         "recommendation": "즉시 수정해야 할 실무 조치 사항"
@@ -137,12 +135,21 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     
     content_payload.append(prompt)
     
-    response = model.generate_content(
-        content_payload,
-        generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
-    )
-    
-    return response.text, chunk_list
+    # 팩트: 트래픽 초과 시 서버가 죽지 않고 스스로 10초 대기 후 재시도하도록 3회 반복 굴레 생성
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(
+                content_payload,
+                generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
+            )
+            return response.text, chunk_list
+        except Exception as e:
+            if "429" in str(e) or "Quota exceeded" in str(e):
+                if attempt < max_retries - 1:
+                    time.sleep(10) # 구글 서버 과부하 해소를 위해 10초 휴식
+                    continue
+            raise e
 
 # ==========================================
 # 왼쪽 사이드바: 심사 대상 파일 등록
@@ -248,6 +255,6 @@ else:
                     st.markdown("---")
 
             except json.JSONDecodeError:
-                st.error("AI 응답을 구조화하는 데 실패했습니다. 시스템 로그를 확인해 주십시오.")
+                st.error("AI 응답을 구조화하는 데 실패했습니다. 잠시 후 다시 시도해 주십시오.")
             except Exception as e:
-                st.error(f"AI 분석 중 오류가 발생했습니다. 상세 에러: {e}")
+                st.error(f"AI 분석 중 서버 과부하 오류가 발생했습니다. 잠시 대기 후 다시 시도해 주십시오. (에러: {e})")
