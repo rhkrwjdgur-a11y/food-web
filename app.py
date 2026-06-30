@@ -29,7 +29,7 @@ try:
 except KeyError:
     st.error("시스템 오류: Secrets에 'AI_VISION_API_KEY'가 설정되지 않았습니다.")
 
-# 3. 법령 가이드라인 PDF 로드 함수
+# 3. 법령 가이드라인 PDF 로드 함수 (Track 2 법적 리스크용 지식베이스)
 @st.cache_data
 def load_guideline_knowledge():
     docs_path = "docs"
@@ -59,7 +59,7 @@ def load_guideline_knowledge():
             
     return knowledge_text, None
 
-# 4. 실시간 AI 비전 분석 로직 (429 과부하 방지 Retry 엔진 탑재)
+# 4. 실시간 AI 비전 분석 로직 (투트랙 검토 엔진)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
@@ -101,41 +101,40 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
                 pass
                 
     prompt = f"""
-    당신은 엄격한 품질관리(QC) 및 표시광고 검토 전문가입니다.
+    당신은 엄격한 품질관리(QC) 전문가이자 법적 규제 준수(Compliance) 검토자입니다.
     전송된 이미지 구조는 다음과 같습니다:
-    1. 첫 {len(chunk_list)}장: '메인 상세페이지 시안'을 위에서 아래로 분할한 구간 이미지 (인덱스 0부터 시작)
-    2. 그 다음 {master_fact_count}장: 품질관리팀 및 법무팀에서 최종 승인한 '확정 표시사항 기준안 (최종 팩시안)'
-    3. 나머지 이미지: 기타 증빙 서류
+    1. 첫 {len(chunk_list)}장: 마케팅 부서가 기획한 '상세페이지 시안' 구간 이미지 (인덱스 0부터 시작)
+    2. 그 다음 {master_fact_count}장: 품질관리팀이 승인한 '확정 팩시안(패키지 전개도, 한글표시사항)'
+    3. 나머지: 기타 증빙 서류
     
-    [식약처 가이드라인 지식 베이스]
+    [식약처 법령 및 가이드라인 지식 베이스]
     {legal_text}
     
-    [초정밀 팩트 체크 및 대조 강제 룰 - 반드시 준수할 것]
-    Rule 1 (수치 완전 일치): 상세페이지 내에서 마케팅용으로 강조된 수치(칼로리, 영양성분, 함량%)와 하단 '영양정보표', 그리고 '최종 팩시안'의 수치가 단 1이라도 불일치하면 무조건 '치명적 위반'으로 적발하십시오.
-    Rule 2 (오탈자 정밀 스캔): 상품정보제공고시, 원재료명, 주의사항 텍스트에서 발생하는 오탈자를 한 글자 단위로 색출하십시오.
-    Rule 3 (알레르기 교차오염 중복 표기 금지): 제품 원재료에 이미 투입되어 '함유'로 적힌 알레르기 유발물질이 교차오염 주의 문구에 중복 기재되어 있다면 '수정 권고'로 적발하십시오.
-    Rule 4 (원산지 및 성분 거짓광고): 메인 광고 문구와 증빙 서류 간 원산지나 배합비가 불일치하는지 대조하십시오.
-    Rule 5 (기만 행위): 특정 원물 이미지를 크게 강조하고 함량(%)을 누락했거나, 건강기능식품으로 오인할 문구가 있는지 검토하십시오.
+    [투트랙(Two-Track) 교차 심문 룰 - 환각 절대 금지]
+    Rule 1 (외부 지식 및 추론 차단): 당신의 개인적 배경지식을 절대 사용하지 마십시오. 오직 업로드된 이미지의 텍스트와 위에 제공된 [식약처 법령 지식 베이스]만을 판단의 근거로 사용하십시오.
     
-    [3-Pass 검토 프로세스]
-    모든 구간(image_index)에 대하여 추출(Pass 1), 팩트 대조(Pass 2), 판정(Pass 3)을 수행하십시오.
+    Rule 2 (Track 1. 팩시안 내부 팩트 대조): 상세페이지의 마케팅 문구(무첨가, 100%, 특정 원산지, 함량, 영양 수치 등)가 '확정 팩시안'과 1:1로 일치하는지 검토하십시오. 수치가 단 1이라도 다르거나 원산지가 불일치하면 '치명적 위반'입니다.
     
-    반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오. 모든 구간 인덱스가 포함되어야 합니다.
+    Rule 3 (Track 2. 식약처 법적 리스크 스캔): 팩시안과 일치하더라도, 마케팅 문구의 표현 방식이 [식약처 법령 지식 베이스]를 위반하는지 검토하십시오. (예: 일반가공식품인데 건강기능식품이나 의약품으로 오인하게 만드는 문구, 질병 치료 암시, 객관적 근거 없는 '최고/유일' 등의 과장 표현, 원재료 특성을 제품 전체의 효능으로 부풀리는 기만행위 등). 위반 소지가 있으면 '치명적 위반' 또는 '수정 권고'로 적발하십시오.
+    
+    Rule 4 (원문 인용 강제): 판정 시 반드시 상세페이지 추출 문구를 명시하고, 그에 대한 반박 근거를 "팩시안 원문 팩트: [문구]" 또는 "식약처 법령 근거: [관련 고시 내용]" 형태로 명확히 인용하십시오.
+    
+    반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
       {{
         "image_index": 구간 인덱스 번호 (0부터 시작하는 정수),
         "risk_level": "치명적 위반", "수정 권고", 또는 "정상",
-        "title": "검토 항목 요약",
-        "found_text": "상세페이지에서 추출된 문제 문구 (정상일 경우 생략 가능)",
-        "fact_check": "확정 표시사항 기준안(최종 팩시안) 및 강제 룰과 대조한 팩트 결과",
-        "recommendation": "즉시 수정해야 할 실무 조치 사항"
+        "title": "검토 항목 요약 (예: 마케팅 문구 팩트 불일치, 식약처 부당광고 고시 위반 등)",
+        "marketing_text": "상세페이지에서 추출한 텍스트 원문 (정상일 경우 생략 가능)",
+        "fact_or_legal_ground": "확정 팩시안 원문 또는 식약처 법령 지식베이스에서 발췌한 근거 내용 (정상일 경우 생략 가능)",
+        "discrepancy_analysis": "두 텍스트 간의 팩트 불일치 또는 법적 규제 위반 사항 분석 및 수정 지시 내용"
       }}
     ]
+    위반 사항이 없다면 risk_level을 "정상"으로 반환하고 discrepancy_analysis에 '해당 구간 팩트 일치 및 법적 리스크 없음'이라고 기재하십시오.
     """
     
     content_payload.append(prompt)
     
-    # 팩트: 트래픽 초과 시 서버가 죽지 않고 스스로 10초 대기 후 재시도하도록 3회 반복 굴레 생성
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -147,7 +146,7 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
         except Exception as e:
             if "429" in str(e) or "Quota exceeded" in str(e):
                 if attempt < max_retries - 1:
-                    time.sleep(10) # 구글 서버 과부하 해소를 위해 10초 휴식
+                    time.sleep(10)
                     continue
             raise e
 
@@ -165,7 +164,7 @@ uploaded_spec = st.sidebar.file_uploader("2️⃣ 원료 한글라벨/스펙", t
 uploaded_recipe = st.sidebar.file_uploader("3️⃣ 배합비/레시피 데이터", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
 st.sidebar.markdown("---")
-trigger_api = st.sidebar.button("⚙️ 3-Pass 정밀 심사 가동 (Vision API)", use_container_width=True)
+trigger_api = st.sidebar.button("⚙️ 3-Pass 투트랙 정밀 심사 가동", use_container_width=True)
 
 # ==========================================
 # 최상단: 타이틀 및 지식베이스 로딩 상태
@@ -188,11 +187,11 @@ else:
         main_img_objs.append(Image.open(file))
         
     if not trigger_api:
-        st.info("좌측 하단의 '3-Pass 정밀 심사 가동' 버튼을 누르면 AI 분석이 시작됩니다.")
+        st.info("좌측 하단의 '3-Pass 투트랙 정밀 심사 가동' 버튼을 누르면 AI 분석이 시작됩니다.")
         for img in main_img_objs:
             st.image(img, use_container_width=True)
     else:
-        with st.spinner("구글 Vision API 가동 중: 초정밀 팩트 체크 룰에 따라 오탈자 및 수치 대조를 진행하고 있습니다..."):
+        with st.spinner("구글 Vision API 가동 중: 상세페이지 문구와 팩시안/식약처 법령 간의 투트랙 대조를 진행하고 있습니다..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
@@ -202,7 +201,7 @@ else:
                 json_result, chunk_list = analyze_design_with_ai(main_img_objs, ref_files, uploaded_master_fact, legal_knowledge_base)
                 report_data = json.loads(json_result)
                 
-                st.markdown('<div class="section-title">📊 광고 적정성 3-Pass 종합 진단 결과</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-title">📊 광고 적정성 3-Pass 투트랙 진단 결과</div>', unsafe_allow_html=True)
                 
                 critical_cnt = sum(1 for r in report_data if r.get("risk_level") == "치명적 위반")
                 warning_cnt = sum(1 for r in report_data if r.get("risk_level") == "수정 권고")
@@ -230,7 +229,7 @@ else:
                         issues = [r for r in report_data if r.get("image_index") == idx]
                         
                         if not issues:
-                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>확정 팩시안 대조 결과 해당 구간 일치 및 이상 없음.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>투트랙 대조 결과 팩트 불일치 및 식약처 법적 리스크 없음.</div>', unsafe_allow_html=True)
                         else:
                             for issue in issues:
                                 risk = issue.get("risk_level", "정상")
@@ -245,9 +244,9 @@ else:
                                 st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
                                 st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
                                 st.markdown(f"""
-                                - **추출된 문구:** {issue.get("found_text", "-")}
-                                - **팩트 대조(Pass 2):** {issue.get("fact_check", "")}
-                                - **QC 판정(Pass 3):** {issue.get("recommendation", "")}
+                                - **상세페이지 원문:** {issue.get("marketing_text", "-")}
+                                - **팩트 또는 법령 근거:** {issue.get("fact_or_legal_ground", "-")}
+                                - **분석 및 조치:** {issue.get("discrepancy_analysis", "")}
                                 """)
                                 st.markdown('</div>', unsafe_allow_html=True)
                                 st.write("") 
