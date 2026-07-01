@@ -50,7 +50,7 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB 호출 함수
+# 3-2. 식약처 영양성분 DB 호출 함수 (인코딩 및 투망식 50개 검색 적용)
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     service_id = "I2790"
@@ -75,9 +75,9 @@ def auto_extract_db_keywords(main_images):
         payload.append(img)
     prompt = """
     당신은 식품 상세페이지에서 외부 영양성분 DB 검색이 필요한 '핵심 원물 명칭'을 자동 추출하는 AI입니다.
-    이미지들을 훑어보고, 타 식품과 영양성분을 비교하는 인포그래픽이 있는지 찾으십시오.
-    발견되었다면, 수식어(구운것, 말린것 등)를 뺀 가장 기본이 되는 명사(예: 쇠고기, 닭고기, 대두, 우유)만을 쉼표(,)로 구분하여 출력하십시오.
-    없다면 오직 'NONE'이라고만 출력하십시오.
+    이미지들을 훑어보고, 타 식품과 영양성분을 비교하는 인포그래픽(예: 쇠고기, 닭고기, 대두 등과의 단백질 수치 비교)이 있는지 찾으십시오.
+    발견되었다면, 수식어(구운것, 말린것 등)를 뺀 가장 기본이 되는 명사만을 쉼표(,)로 구분하여 출력하십시오. (예: 쇠고기, 닭고기, 대두)
+    절대 다른 부연 설명 없이 명사들만 출력하십시오. 없다면 오직 'NONE'이라고만 출력하십시오.
     """
     payload.append(prompt)
     try:
@@ -87,15 +87,13 @@ def auto_extract_db_keywords(main_images):
         return [k.strip() for k in res_text.split(",")]
     except Exception: return []
 
-# 4-2. 실시간 AI 비전 분석 로직 (강제 크롭 로직 제거 -> 사용자 수동 캡처 1:1 매칭 보장)
+# 4-2. 실시간 AI 비전 분석 로직 (변수 유실 방지 및 강력한 룰 탑재)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     content_payload = []
     chunk_list = []
     
-    # 팩트: 기계적 분할(split_height) 로직 완전 제거
-    # 질문자님이 업로드한 의미 단위의 개별 이미지 1장이 곧 1개의 완벽한 인덱스가 됨
     for img_obj in main_images:
         w, h = img_obj.size
         if w > 2000: 
@@ -114,29 +112,30 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
             except: pass
                 
     prompt = f"""
-    당신은 엄격한 품질관리(QC) 전문가입니다. 제공된 개별 시안 이미지(인덱스)마다 아래 4가지 항목을 무조건 검토하십시오.
+    당신은 엄격한 품질관리(QC) 전문가입니다. 각 시안 조각(인덱스)마다 아래 항목을 무조건 검토하십시오.
     
     [식약처 법령 지식 베이스]
     {legal_text}
     
-    [자동 추출된 국가 공인 영양성분 DB 데이터 (최대 50건 목록)]
-    {db_context_text if db_context_text else "검색된 외부 DB 데이터 없음."}
+    [자동 추출된 국가 공인 영양성분 DB 데이터]
+    {db_context_text if db_context_text else "경고: 외부 DB 데이터가 존재하지 않습니다. 수치 비교가 불가함을 리포트에 명시하십시오."}
     
     [필수 강제 체크리스트 - 스킵 절대 금지]
-    🔥 1. DB 비교 수치 초정밀 검증 (적합 판정 명시 강제):
-       - 시안의 비교 그래프에 적힌 작은 글씨(예: '한우, 등심 구운것', '노란콩 말린것')를 꼼꼼히 읽으십시오.
-       - 위 [식약처 DB 데이터] 중에서, 부위 및 조리 상태(DESC_KOR)가 완벽하게 일치하는 항목을 찾아 수치를 대조하십시오.
-       - 일치하면 "risk_level": "정상"으로 세팅하고 "식약처 DB(세부명칭 OOO) 수치와 정확히 일치하여 사용 적합합니다."라고 기재하십시오. 틀리면 "치명적 위반"으로 적발하십시오.
+    🔥 1. DB 비교 수치 초정밀 검증 (적합 판정 칭찬 강제):
+       - 시안의 비교 그래프에 적힌 작은 글씨(예: '한우, 등심 구운것', '노란콩 말린것', '구운것')를 꼼꼼히 읽으십시오.
+       - 위 [식약처 DB 데이터]가 제공되었다면, 부위/조리 상태(DESC_KOR)가 완벽히 일치하는 항목을 찾아 단백질 등 수치를 대조하십시오.
+       - 일치하면 반드시 "risk_level": "정상" 객체를 생성하여 "식약처 DB(예: 쇠고기 한우 등심 구운것 18.9g) 수치와 정확히 일치하여 사용 적합합니다."라고 기재하십시오. 틀리면 "치명적 위반"으로 적발하십시오.
 
     🔥 2. 시간 조작(Time-travel) 과장광고 절대 방어:
-       - 매출 1위, 수상 내역 등을 주장할 때 작은 글씨로 적힌 '데이터 산정 기간(연/월/일)'이 미래 시점인지 확인하여 과장광고를 적발하십시오.
+       - 매출 1위 등을 주장할 때 작은 글씨로 적힌 '데이터 산정 기간(연/월/일)'이 미래 시점(예: 2025년 12월)인지 확인하여 미래 시점이라면 즉시 과장광고로 적발하십시오.
 
     🔥 3. 기만행위 (100% 꼼수, 제조공정) 및 칼로리 스팸 방지:
        - 상하단 칼로리 모순 에러는 '영양정보표'가 명확히 보이는 해당 인덱스에서만 1번 출력하십시오.
-       - '100% 약콩'이라 해놓고 원재료엔 대두가 섞여있는지, 공정도엔 약콩만 갈았다고 묘사했으나 실제 원재료명엔 다른 콩이 혼합되었는지 확인하십시오.
+       - '100% 약콩'이라 강조해놓고 원재료명에 대두가 섞여있는지 확인하여 기만행위로 적발하십시오.
+       - 공정도(그림)엔 '약콩'만 갈았다고 묘사했으나 원재료명엔 대두가 혼합되었는지 확인하십시오.
        
     🔥 4. 법적 용어 (ZERO vs 무첨가) 및 연출 사진:
-       - 당류가 존재함에도 '설탕 ZERO'라고 마케팅했다면 '설탕 무첨가'로 수정 권고하십시오.
+       - 콩 유래 천연 당류가 0g 초과임에도 '설탕 ZERO'라고 마케팅했다면 '설탕 무첨가'로 수정 권고하십시오.
        - 연출 사진 주변에 면책 문구(연출된 이미지) 누락 여부를 확인하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
@@ -144,13 +143,13 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
       {{
         "image_index": 구간 인덱스 번호 (0부터 시작, 업로드된 이미지 순서와 동일함),
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
-        "title": "검토 항목 요약",
+        "title": "검토 항목 요약 (예: DB 단백질 수치 검증 적합, 미래 시점 과장광고 등)",
         "marketing_text": "상세페이지 추출 원문",
         "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 또는 법적 가이드라인",
-        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 일치 시 적합 판정 칭찬 문구 필수 기재)"
+        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 일치 시 반드시 적합 판정 칭찬 문구 기재)"
       }}
     ]
-    * 해당 이미지에 위반사항이나 DB 적합 판정이 없다면 risk_level "정상" 객체(내용: 특이사항 없음)를 반환하십시오.
+    * 해당 이미지에 위반사항이나 칭찬할 DB 적합 판정이 전혀 없다면 risk_level "정상" 객체(내용: 특이사항 없음)를 반환하십시오.
     """
     content_payload.append(prompt)
     
@@ -168,10 +167,6 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
 # ==========================================
 st.sidebar.markdown("### 📥 심사 대상 파일 등록")
 uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 시안 (다중 업로드)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔍 식약처 영양성분 DB 실시간 자동 연동 (비교광고 검증용)")
-db_search_keyword = st.sidebar.text_input("상세페이지 내 비교 대상 식품명 입력", help="비워두면 AI가 자동으로 탐지합니다.")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📄 팩트 체크용 증빙 서류 (다중 업로드)")
@@ -205,7 +200,8 @@ else:
         st.info("좌측 하단의 심사 가동 버튼을 누르면 AI 분석이 시작됩니다.")
         for img in main_img_objs: st.image(img, use_container_width=True)
     else:
-        db_context_text = ""
+        # 단일 실행 컨텍스트(Single Execution Context)로 묶어 변수 증발 원천 차단
+        final_db_context_text = "" 
         
         with st.spinner("🔍 1단계: 시안 내 식약처 DB 비교광고 키워드를 자동 탐지하고 있습니다..."):
             auto_keywords = auto_extract_db_keywords(main_img_objs)
@@ -214,21 +210,22 @@ else:
                 for kw in auto_keywords:
                     db_data = query_food_nutrient_db(kw)
                     if db_data:
-                        db_context_text += f"\n[검색어 '{kw}' 식약처 공인 데이터 (최대 50건)]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
+                        final_db_context_text += f"\n[검색어 '{kw}' 식약처 공인 데이터 (최대 50건)]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
                         st.sidebar.info(f"✅ 식약처 DB '{kw}' 연동 완료 (상세 분류 포함)")
                     else:
-                        st.sidebar.error(f"❌ DB에서 '{kw}' 데이터를 찾을 수 없습니다. (검색어 재확인 필요)")
+                        st.sidebar.error(f"❌ DB에서 '{kw}' 데이터를 찾을 수 없습니다.")
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (수동 캡처 이미지 1:1 무결성 보장)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (DB 수치 주입 및 적합 판정 수행)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
                 if uploaded_spec: ref_files.extend(uploaded_spec)
                 if uploaded_recipe: ref_files.extend(uploaded_recipe)
                 
-                json_result, chunk_list = analyze_design_with_ai(main_img_objs, ref_files, uploaded_master_fact, legal_knowledge_base, db_context_text)
+                # 강제 결합된 final_db_context_text 변수를 AI에게 투입
+                json_result, chunk_list = analyze_design_with_ai(main_img_objs, ref_files, uploaded_master_fact, legal_knowledge_base, final_db_context_text)
                 report_data = json.loads(json_result)
                 
                 st.markdown('<div class="section-title">📊 광고 적정성 종합 진단 결과</div>', unsafe_allow_html=True)
