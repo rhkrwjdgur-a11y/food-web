@@ -6,6 +6,7 @@ import PyPDF2
 import json
 import time
 import requests
+import urllib.parse
 
 # 1. 기본 페이지 설정
 st.set_page_config(page_title="식품 표시사항 정밀 검토 시스템", layout="wide")
@@ -49,11 +50,14 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB 호출 함수
+# 3-2. 식약처 영양성분 DB 호출 함수 (인코딩 및 투망식 50개 검색 적용)
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     service_id = "I2790"
-    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/5/DESC_KOR={food_name}"
+    # 한글 검색어 URL 인코딩 처리
+    encoded_food = urllib.parse.quote(food_name.strip())
+    # 검색 범위를 상위 5개에서 50개로 늘려 세부 부위(구운것, 말린것 등)가 모두 포함되도록 수정
+    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={encoded_food}"
     try:
         response = requests.get(url, timeout=15)
         if response.status_code == 200:
@@ -72,9 +76,9 @@ def auto_extract_db_keywords(main_images):
         if w > 1000: img = img.resize((1000, int(h * (1000.0/w))), Image.LANCZOS)
         payload.append(img)
     prompt = """
-    당신은 식품 상세페이지에서 외부 영양성분 DB 검색이 필요한 키워드를 자동 추출하는 AI입니다.
+    당신은 식품 상세페이지에서 외부 영양성분 DB 검색이 필요한 '핵심 원물 명칭'을 자동 추출하는 AI입니다.
     이미지들을 훑어보고, 타 식품과 영양성분을 비교하는 인포그래픽이 있는지 찾으십시오.
-    발견되었다면, 비교 대상이 된 식품의 정확한 명칭(예: 쇠고기, 닭고기, 대두 등)을 쉼표(,)로만 구분하여 출력하십시오.
+    발견되었다면, 검색 API의 호환성을 위해 수식어(구운것, 말린것 등)를 제외한 **가장 기본이 되는 핵심 명사(예: 쇠고기, 닭고기, 대두, 우유)**만을 쉼표(,)로 구분하여 출력하십시오. (세부 분류는 메인 AI가 나중에 대조할 것입니다.)
     없다면 오직 'NONE'이라고만 출력하십시오.
     """
     payload.append(prompt)
@@ -85,7 +89,7 @@ def auto_extract_db_keywords(main_images):
         return [k.strip() for k in res_text.split(",")]
     except Exception: return []
 
-# 4-2. 실시간 AI 비전 분석 로직 (식품공학 지식 및 전면 스팸 금지 룰 탑재)
+# 4-2. 실시간 AI 비전 분석 로직 (세부 부위 매칭 및 적합 판정 명시 룰 탑재)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
@@ -111,35 +115,42 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
             except: pass
                 
     prompt = f"""
-    당신은 엄격한 품질관리(QC) 전문가입니다.
+    당신은 엄격한 품질관리(QC) 전문가입니다. 각 시안 조각(인덱스)마다 아래 4가지 항목을 무조건 검토하십시오.
     
-    [식약처 법령 및 지식 베이스]
+    [식약처 법령 지식 베이스]
     {legal_text}
     
-    [자동 추출된 국가 공인 영양성분 DB 데이터]
+    [자동 추출된 국가 공인 영양성분 DB 데이터 (최대 50건 목록)]
     {db_context_text if db_context_text else "검색된 외부 DB 데이터 없음."}
     
-    [베테랑 QC 절대 룰 - 위반 시 시스템 오류]
-    🔥 Rule 1 (전면적 중복 스팸 방지 절대 명령): 어떤 종류의 에러(모순, 위반, 연출 이미지 문구 누락 등)를 발견하더라도, 문서 전체를 통틀어 **오직 최초로 발견된 인덱스(조각)에서 딱 1번만 리포트에 출력**하십시오. 동일한 문제로 여러 인덱스에서 잔소리를 반복하는 것은 금지됩니다.
-    
-    🔥 Rule 2 (관용 명칭 합법 인정): '약콩', '쥐눈이콩' 등은 널리 쓰이는 농산물 관용 명칭입니다. '약'자가 들어갔다고 해서 의약품 오인 광고로 무식하게 적발하지 마십시오. 무조건 합법(정상) 처리하십시오.
-    
-    🔥 Rule 3 (설탕(Sucrose) vs 당류(Total Sugars) 엄격 분리): '설탕 ZERO' 또는 '무가당'이라는 마케팅은 '인위적으로 설탕을 넣지 않았다'는 합법적 표현입니다. 원물(콩, 우유 등)에서 유래한 천연 '당류(Total Sugars)'가 하단 영양표에 5g, 10g 적혀있다고 해서 이를 모순이나 거짓 광고로 지적하지 마십시오.
-    
-    🔥 Rule 4 (비교 광고 DB 스캔): 타 식품과의 단백질 등 비교 수치가 [자동 추출된 국가 공인 영양성분 DB 데이터]와 소수점까지 일치하는지 대조하십시오. 일치하면 '수치 팩트 확인 완료, 적합'으로 기재하십시오.
+    [필수 강제 체크리스트 - 스킵 절대 금지]
+    🔥 1. DB 비교 수치 초정밀 검증 (세부 부위 및 조리 상태 완벽 대조):
+       - 시안의 비교 그래프에 적힌 작은 글씨(예: '한우, 등심 구운것', '노란콩 말린것', '구운것')를 한 글자도 빠짐없이 읽어내십시오.
+       - 제공된 [식약처 DB 데이터] 중에서, 시안에 적힌 부위 및 조리 상태와 완벽하게 일치하는 항목(DESC_KOR)을 찾아내어 단백질 등의 수치를 대조하십시오.
+       - 부위/조리법 조건이 맞고 수치까지 일치한다면 "risk_level": "정상"으로 세팅하고 "세부 항목(예: 쇠고기 한우 등심 구운것 18.9g) DB 수치 정확히 일치하여 사용 적합합니다."라고 명시하십시오. 틀리면 "치명적 위반"으로 적발하십시오.
+
+    🔥 2. 칼로리 스팸 방지 및 내부 모순:
+       - 상/하단 칼로리가 불일치한다면, 그 에러는 오직 '하단 영양정보표'가 보이는 조각에서만 딱 1번 적발하십시오.
+
+    🔥 3. 기만행위 (시점 조작, 100% 꼼수, 제조공정):
+       - 미래 데이터를 바탕으로 1위를 주장하는지, '100% 약콩'이라 해놓고 원재료엔 대두가 섞여있는지 확인하십시오.
+       
+    🔥 4. 법적 용어 (ZERO vs 무첨가) 및 연출 사진:
+       - 콩 등 천연 당류가 존재함에도 '설탕 ZERO'라고 기재했다면 '설탕 무첨가'로 수정 권고하십시오.
+       - 연출 사진 주변에 면책 문구 유무를 적발하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
       {{
-        "image_index": 위반 사항이 발견된 단 하나의 최초 구간 인덱스 번호 (0부터 시작),
+        "image_index": 구간 인덱스 번호 (0부터 시작),
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
         "title": "검토 항목 요약",
-        "marketing_text": "상세페이지 추출 원문",
-        "fact_or_legal_ground": "팩시안, 외부 DB 또는 식품공학적 팩트",
-        "discrepancy_analysis": "위반 분석 및 조치 사항 (중복 출력 금지)"
+        "marketing_text": "상세페이지 추출 원문 (예: 쇠고기(한우, 등심 구운것))",
+        "fact_or_legal_ground": "팩시안 원문, 외부 DB 매칭 항목, 또는 법적 가이드라인",
+        "discrepancy_analysis": "DB 일치 시 세부명칭 포함 적합 판정 문구 기재, 불일치/위반 시 조치 사항 기재"
       }}
     ]
-    * 만약 에러가 없다면 빈 배열이 아닌 risk_level "정상" 객체를 반환하십시오.
+    * 해당 구간에 보고할 위반사항이나 DB 적합 판정이 전혀 없다면 risk_level "정상" 객체(내용: 특이사항 없음)를 반환하십시오.
     """
     content_payload.append(prompt)
     
@@ -160,7 +171,7 @@ uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🔍 식약처 영양성분 DB 실시간 자동 연동 (비교광고 검증용)")
-db_search_keyword = st.sidebar.text_input("상세페이지 내 비교 대상 식품명 입력", help="쉼표(,)로 구분하여 여러 개 입력 가능. 예: 쇠고기, 닭고기, 대두")
+db_search_keyword = st.sidebar.text_input("상세페이지 내 비교 대상 식품명 입력", help="비워두면 AI가 자동으로 탐지합니다.")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📄 팩트 체크용 증빙 서류 (다중 업로드)")
@@ -199,18 +210,19 @@ else:
         with st.spinner("🔍 1단계: 시안 내 식약처 DB 비교광고 키워드를 자동 탐지하고 있습니다..."):
             auto_keywords = auto_extract_db_keywords(main_img_objs)
             if auto_keywords:
-                st.sidebar.success(f"🤖 AI 자동 탐지 키워드: {', '.join(auto_keywords)}")
+                st.sidebar.success(f"🤖 AI 자동 탐지 핵심 키워드: {', '.join(auto_keywords)}")
                 for kw in auto_keywords:
                     db_data = query_food_nutrient_db(kw)
                     if db_data:
-                        db_context_text += f"\n[검색어 '{kw}' 식약처 공인 데이터]\n" + json.dumps(db_data, ensure_ascii=False) + "\n"
-                        st.sidebar.info(f"✅ 식약처 DB '{kw}' 연동 완료")
+                        # 데이터 전체를 넘기되 너무 길면 자름 (토큰 한도 방지)
+                        db_context_text += f"\n[검색어 '{kw}' 식약처 공인 데이터 (최대 50건)]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
+                        st.sidebar.info(f"✅ 식약처 DB '{kw}' 연동 완료 (상세 분류 포함 데이터 획득)")
                     else:
                         st.sidebar.error(f"❌ DB에서 '{kw}' 데이터를 찾을 수 없습니다.")
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (단어 오판 방지 룰 적용)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (DB 세부 부위 매칭 및 적합 판정 룰 적용)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
