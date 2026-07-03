@@ -51,11 +51,21 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB 호출 함수
+# 3-2. 식약처 영양성분 DB 호출 함수 [신규: 식약처 행정 표준어 치환 딕셔너리 추가]
 def query_food_nutrient_db(food_name):
     if not food_name: return None
+    
+    # 마케팅 관용어를 식약처 DB 표준어로 자동 변환
+    std_dict = {
+        "쇠고기": "소고기",
+        "계육": "닭고기",
+        "돈육": "돼지고기",
+        "우유": "우유"
+    }
+    search_name = std_dict.get(food_name.strip(), food_name.strip())
+    
     service_id = "I2790"
-    encoded_food = urllib.parse.quote(food_name.strip())
+    encoded_food = urllib.parse.quote(search_name)
     url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={encoded_food}"
     try:
         response = requests.get(url, timeout=15)
@@ -66,7 +76,7 @@ def query_food_nutrient_db(food_name):
     except Exception: pass
     return None
 
-# 4-1. Auto Pre-Scan: 이미지에서 비교 대상 식품 키워드 자동 추출 (범용 룰 적용)
+# 4-1. Auto Pre-Scan: 이미지에서 비교 대상 식품 키워드 자동 추출 (범용)
 def auto_extract_db_keywords(main_images):
     model = genai.GenerativeModel('gemini-2.5-flash')
     payload = []
@@ -88,7 +98,7 @@ def auto_extract_db_keywords(main_images):
         return [k.strip() for k in res_text.split(",")]
     except Exception: return []
 
-# 4-2. 실시간 AI 비전 분석 로직 (특정 단어 저격 금지, 범용 논리 탑재)
+# 4-2. 실시간 AI 비전 분석 로직 (당류 법적 잣대 및 범용 룰 탑재)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     current_date_str = datetime.now().strftime("%Y년 %m월 %d일")
@@ -120,33 +130,36 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     {legal_text}
     
     [자동 추출된 국가 공인 영양성분 DB 데이터]
-    {db_context_text if db_context_text else "경고: 외부 DB 데이터가 존재하지 않습니다. 수치 비교가 불가함을 리포트에 명시하십시오."}
+    {db_context_text if db_context_text else "경고: 외부 DB 데이터가 존재하지 않습니다."}
     
-    [필수 강제 체크리스트 - 범용성 보장]
-    🔥 1. DB 비교 수치 범용 검증:
-       - 시안 내 타 식품 비교 자료에 적힌 원물 명칭과 세부 수식어(부위, 조리법 등)를 모두 읽으십시오.
-       - 위 [식약처 DB 데이터]와 부위/조리 상태(DESC_KOR)가 일치하는 항목의 수치를 대조하여, 일치 시 "risk_level": "정상" 객체를 생성하여 "식약처 DB 수치와 일치하여 적합함"을 명시하십시오. 불일치 시 "치명적 위반"으로 적발하십시오.
+    [필수 강제 체크리스트 - 범용성 및 법적 엄격성 보장]
+    
+    🔥 1. 당류 관련 법적 용어 엄격 구분 (ZERO vs 무가당/무첨가):
+       - [무당, 설탕 ZERO, 슈가 ZERO]: 최종 제품의 영양정보표 상 총 당류가 100g(ml)당 '0.5g 미만'일 때만 사용 가능합니다.
+       - [무가당, 설탕 무첨가]: 인위적인 당류 첨가가 없음을 의미합니다. 원물(콩, 과일 등) 유래 천연 당류로 인해 영양정보표에 당류가 0.5g 이상 표기되어 있다면, 절대 'ZERO/무당'을 쓸 수 없으며 반드시 '무가당/설탕 무첨가'로 표기해야 합법입니다.
+       - 위 기준을 적용하여 시안의 'ZERO/무당/무가당' 마케팅 문구와 영양정보표 당류 수치를 대조하여 법적 오류를 색출하십시오.
 
-    🔥 2. 시간 조작 과장광고 범용 방어:
-       - 매출 1위, 수상 내역 등의 데이터 산정 기간이 명시된 경우, 해당 기간이 현재 시점({current_date_str})을 초과하는 미래 시점의 데이터를 근거로 삼고 있는지 팩트 대조하여 과장 광고를 적발하십시오.
+    🔥 2. DB 비교 수치 범용 검증:
+       - 타 식품 비교 자료의 명칭 및 세부 수식어(조리법 등)를 읽고, 위 [식약처 DB 데이터]와 완벽히 일치하는 항목(DESC_KOR)의 수치를 대조하십시오.
+       - 일치 시 "risk_level": "정상" 객체를 생성하여 "식약처 DB (세부명칭) 수치와 정확히 일치하여 적합함"을 명시하십시오. 불일치 시 "치명적 위반"으로 적발하십시오.
 
-    🔥 3. 배합 기만 및 모순 범용 방어:
-       - 마케팅 문구나 제조 공정도 상에 특정 하위 원료(예: 특정 품종, 특정 부위)를 '100%'로 강조하거나 단독 사용한 것처럼 묘사했을 때, 실제 원재료명에 상위 범주의 범용 원료나 타 원료가 혼합되어 있는지 대조하십시오.
-       - 상하단 칼로리 모순 에러는 '영양정보표'가 명확히 보이는 해당 인덱스에서만 1번 출력하십시오.
-       
-    🔥 4. 영양강조표시 및 연출 사진 범용 기준:
-       - 원재료 유래 천연 당류로 인해 영양정보표 상 당류가 0g을 초과함에도 마케팅 시안에 'ZERO' 등의 절대적 표현을 사용했는지 대조하여 '무첨가'로의 수정을 권고하십시오.
-       - 조리되거나 원물이 묘사된 연출 사진 주변에 '연출된 이미지' 등의 면책 문구가 누락되었는지 확인하십시오.
+    🔥 3. 시간 조작 과장광고 범용 방어:
+       - 매출/수상 등의 데이터 산정 기간이 명시된 경우, 해당 기간이 현재 시점({current_date_str})을 초과하는 미래 시점을 포함하는지 대조하여 과장 광고를 적발하십시오.
+
+    🔥 4. 배합 기만 및 모순 범용 방어:
+       - 특정 원료(하위 품종 등)를 '100%'로 강조하거나 단독 묘사(그림)했으나, 원재료명에 상위 범주 원료나 타 원료가 혼합되어 있는지 대조하십시오.
+       - 상하단 칼로리 모순 에러는 '영양정보표'가 보이는 단일 인덱스에서만 1번 적발하십시오.
+       - 연출 사진 주변에 '연출된 이미지' 등의 면책 문구가 누락되었는지 확인하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
       {{
         "image_index": 구간 인덱스 번호 (0부터 시작, 업로드된 이미지 순서와 동일함),
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
-        "title": "검토 항목 요약",
+        "title": "검토 항목 요약 (예: 당류 ZERO 표기 위반, DB 수치 적합 확인 등)",
         "marketing_text": "상세페이지 추출 원문",
-        "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 날짜 팩트 또는 법적 가이드라인",
-        "discrepancy_analysis": "위반 분석 및 조치 사항"
+        "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 날짜 팩트 또는 당류 관련 법적 잣대",
+        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 적합 시 칭찬 문구 필수)"
       }}
     ]
     * 해당 이미지에 위반사항이나 DB 적합 판정이 전혀 없다면 risk_level "정상" 객체(내용: 특이사항 없음)를 반환하십시오.
@@ -220,7 +233,7 @@ else:
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (범용 QC 룰 적용)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (당류 법적 용어 및 DB 표준어 필터 적용)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
