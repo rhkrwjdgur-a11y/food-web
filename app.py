@@ -8,6 +8,7 @@ import time
 import requests
 import urllib.parse
 from datetime import datetime
+import re
 
 # 1. 기본 페이지 설정
 st.set_page_config(page_title="식품 표시사항 정밀 검토 시스템", layout="wide")
@@ -51,33 +52,35 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB 호출 함수 [신규: 식약처 행정 표준어 치환 딕셔너리 추가]
+# 3-2. 식약처 영양성분 DB 호출 함수 (인코딩 버그 수정)
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     
-    # 마케팅 관용어를 식약처 DB 표준어로 자동 변환
     std_dict = {
         "쇠고기": "소고기",
         "계육": "닭고기",
-        "돈육": "돼지고기",
-        "우유": "우유"
+        "돈육": "돼지고기"
     }
     search_name = std_dict.get(food_name.strip(), food_name.strip())
     
     service_id = "I2790"
-    encoded_food = urllib.parse.quote(search_name)
-    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={encoded_food}"
+    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={search_name}"
+    
     try:
         response = requests.get(url, timeout=15)
         if response.status_code == 200:
             res_json = response.json()
+            if 'RESULT' in res_json and res_json['RESULT'].get('CODE') != 'INFO-000':
+                st.sidebar.error(f"식약처 API 오류 ({search_name}): {res_json['RESULT'].get('MSG')}")
+                return None
             if service_id in res_json and 'row' in res_json[service_id]:
                 return res_json[service_id]['row']
-    except Exception: pass
+    except Exception as e: 
+        st.sidebar.error(f"통신 에러 ({search_name}): {e}")
     return None
 
-# 4-1. Auto Pre-Scan: 이미지에서 비교 대상 식품 키워드 자동 추출 (범용)
-def auto_extract_db_keywords(main_images):
+# 4-1. Auto Pre-Scan: 대분류 명사(검색용)와 소분류 조건(매칭용)을 쌍으로 추출하는 로직 도입
+def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel('gemini-2.5-flash')
     payload = []
     for img in main_images:
@@ -85,20 +88,30 @@ def auto_extract_db_keywords(main_images):
         if w > 1000: img = img.resize((1000, int(h * (1000.0/w))), Image.LANCZOS)
         payload.append(img)
     prompt = """
-    당신은 식품 상세페이지에서 외부 영양성분 DB 검색이 필요한 '핵심 원물 명칭'을 자동 추출하는 AI입니다.
-    이미지들을 훑어보고, 자사 제품과 타 식품군의 영양성분 수치를 비교하는 마케팅 자료(표, 그래프 등)가 있는지 찾으십시오.
-    발견되었다면, 수식어(구운것, 말린것, 생것 등)를 제외한 가장 기본이 되는 식품의 명사만을 쉼표(,)로 구분하여 출력하십시오. (예: 쇠고기, 닭고기, 대두, 우유, 사과)
-    절대 다른 부연 설명 없이 명사들만 출력하십시오. 없다면 오직 'NONE'이라고만 출력하십시오.
+    당신은 식품 상세페이지에서 외부 영양성분 DB 대조에 필요한 '검색어'와 '세부 조건'을 추출하는 AI입니다.
+    이미지를 훑어보고, 타 식품(쇠고기, 닭고기, 대두 등)과 수치를 비교하는 인포그래픽이 있다면, 
+    API 검색용 '대분류 명사'를 Key로, 시안에 적힌 '세부 수식어(괄호 안 글씨 등)'를 Value로 하는 JSON 객체를 출력하십시오.
+    
+    [예시]
+    시안에 '쇠고기(한우, 등심 구운것)', '닭고기(구운것)', '대두(노란콩 말린것)'이라고 적혀 있다면:
+    {"쇠고기": "한우, 등심 구운것", "닭고기": "구운것", "대두": "노란콩 말린것"}
+    
+    비교 자료가 없다면 오직 "NONE" 이라고만 출력하십시오. 절대 마크다운(```json)이나 부연설명을 넣지 말고 순수 JSON 또는 NONE만 출력하십시오.
     """
     payload.append(prompt)
     try:
         response = model.generate_content(payload)
         res_text = response.text.strip()
-        if res_text == "NONE" or not res_text: return []
-        return [k.strip() for k in res_text.split(",")]
-    except Exception: return []
+        if res_text == "NONE" or not res_text: return {}
+        
+        # 마크다운 찌꺼기 제거
+        res_text = re.sub(r'```json\s*', '', res_text)
+        res_text = re.sub(r'```\s*', '', res_text)
+        
+        return json.loads(res_text)
+    except Exception: return {}
 
-# 4-2. 실시간 AI 비전 분석 로직 (당류 법적 잣대 및 범용 룰 탑재)
+# 4-2. 실시간 AI 비전 분석 로직 (세부 수식어 매칭 강제 및 범용 룰 탑재)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     current_date_str = datetime.now().strftime("%Y년 %m월 %d일")
@@ -134,32 +147,32 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     
     [필수 강제 체크리스트 - 범용성 및 법적 엄격성 보장]
     
-    🔥 1. 당류 관련 법적 용어 엄격 구분 (ZERO vs 무가당/무첨가):
-       - [무당, 설탕 ZERO, 슈가 ZERO]: 최종 제품의 영양정보표 상 총 당류가 100g(ml)당 '0.5g 미만'일 때만 사용 가능합니다.
-       - [무가당, 설탕 무첨가]: 인위적인 당류 첨가가 없음을 의미합니다. 원물(콩, 과일 등) 유래 천연 당류로 인해 영양정보표에 당류가 0.5g 이상 표기되어 있다면, 절대 'ZERO/무당'을 쓸 수 없으며 반드시 '무가당/설탕 무첨가'로 표기해야 합법입니다.
-       - 위 기준을 적용하여 시안의 'ZERO/무당/무가당' 마케팅 문구와 영양정보표 당류 수치를 대조하여 법적 오류를 색출하십시오.
+    🔥 1. DB 비교 수치 세부 조건 정밀 검증:
+       - 위 제공된 DB 데이터 텍스트를 보면 '[검색어 OOO (시안 내 세부조건: XXX)]' 형태로 타겟 조건이 명시되어 있습니다.
+       - 시안 내 비교 대상의 세부 수식어(예: 노란콩 말린것)를 읽고, DB 결과 50개 중에서 이 조건(또는 '황대두 건조' 같은 행정 유의어)에 정확히 부합하는 항목의 수치를 대조하십시오.
+       - 수치가 일치하면 "risk_level": "정상"으로 "식약처 DB(세부명칭 매칭 완료) 수치 일치하여 적합함"을 명시하십시오. 불일치하면 "치명적 위반"으로 적발하십시오.
 
-    🔥 2. DB 비교 수치 범용 검증:
-       - 타 식품 비교 자료의 명칭 및 세부 수식어(조리법 등)를 읽고, 위 [식약처 DB 데이터]와 완벽히 일치하는 항목(DESC_KOR)의 수치를 대조하십시오.
-       - 일치 시 "risk_level": "정상" 객체를 생성하여 "식약처 DB (세부명칭) 수치와 정확히 일치하여 적합함"을 명시하십시오. 불일치 시 "치명적 위반"으로 적발하십시오.
+    🔥 2. 당류 관련 법적 용어 엄격 구분 (ZERO vs 무가당/무첨가):
+       - [무당, 설탕 ZERO, 슈가 ZERO]: 최종 제품 100g(ml)당 당류 '0.5g 미만'일 때만 합법.
+       - [무가당, 설탕 무첨가]: 인위적 당류 첨가 없음. 원물 유래 당류가 0.5g 이상 표기되어 있다면 'ZERO'는 쓸 수 없고 반드시 '무가당/설탕 무첨가'로 수정 지시하십시오.
 
     🔥 3. 시간 조작 과장광고 범용 방어:
-       - 매출/수상 등의 데이터 산정 기간이 명시된 경우, 해당 기간이 현재 시점({current_date_str})을 초과하는 미래 시점을 포함하는지 대조하여 과장 광고를 적발하십시오.
+       - 데이터 산정 기간이 현재 시점({current_date_str})을 초과하는 미래 시점을 포함하는지 팩트 대조하여 적발하십시오.
 
     🔥 4. 배합 기만 및 모순 범용 방어:
-       - 특정 원료(하위 품종 등)를 '100%'로 강조하거나 단독 묘사(그림)했으나, 원재료명에 상위 범주 원료나 타 원료가 혼합되어 있는지 대조하십시오.
-       - 상하단 칼로리 모순 에러는 '영양정보표'가 보이는 단일 인덱스에서만 1번 적발하십시오.
-       - 연출 사진 주변에 '연출된 이미지' 등의 면책 문구가 누락되었는지 확인하십시오.
+       - 특정 하위 원료를 '100%' 강조/단독 묘사했으나 원재료명에 상위 범주나 타 원료가 혼합되어 있는지 대조하십시오.
+       - 상하단 칼로리 모순 에러는 '영양정보표'가 보이는 단일 인덱스에서만 딱 1번 적발하십시오.
+       - 연출 사진 주변에 '연출된 이미지' 면책 문구가 있는지 확인하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
       {{
         "image_index": 구간 인덱스 번호 (0부터 시작, 업로드된 이미지 순서와 동일함),
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
-        "title": "검토 항목 요약 (예: 당류 ZERO 표기 위반, DB 수치 적합 확인 등)",
+        "title": "검토 항목 요약 (예: DB 세부조건 수치 적합 확인, 당류 표기 위반 등)",
         "marketing_text": "상세페이지 추출 원문",
         "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 날짜 팩트 또는 당류 관련 법적 잣대",
-        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 적합 시 칭찬 문구 필수)"
+        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 적합 시 반드시 칭찬/적합 판정 문구 포함)"
       }}
     ]
     * 해당 이미지에 위반사항이나 DB 적합 판정이 전혀 없다면 risk_level "정상" 객체(내용: 특이사항 없음)를 반환하십시오.
@@ -219,21 +232,22 @@ else:
     else:
         final_db_context_text = "" 
         
-        with st.spinner("🔍 1단계: 시안 내 식약처 DB 비교광고 키워드를 자동 탐지하고 있습니다..."):
-            auto_keywords = auto_extract_db_keywords(main_img_objs)
-            if auto_keywords:
-                st.sidebar.success(f"🤖 AI 자동 탐지 핵심 키워드: {', '.join(auto_keywords)}")
-                for kw in auto_keywords:
-                    db_data = query_food_nutrient_db(kw)
+        with st.spinner("🔍 1단계: 시안 내 식약처 DB 타겟(대분류+세부조건)을 자동 추출하고 있습니다..."):
+            auto_dict = auto_extract_db_keywords_json(main_img_objs)
+            if auto_dict:
+                for base_food, detail_cond in auto_dict.items():
+                    st.sidebar.success(f"🤖 탐지 완료: [{base_food}] ➔ 타겟 조건: {detail_cond}")
+                    db_data = query_food_nutrient_db(base_food)
                     if db_data:
-                        final_db_context_text += f"\n[검색어 '{kw}' 식약처 공인 데이터 (최대 50건)]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
-                        st.sidebar.info(f"✅ 식약처 DB '{kw}' 연동 완료 (상세 분류 포함)")
+                        # 메인 AI가 세부 조건을 잊지 않도록 헤더에 강력하게 명시
+                        final_db_context_text += f"\n[검색어 '{base_food}' (시안 내 세부조건: {detail_cond}) 식약처 공인 데이터 최대 50건]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
+                        st.sidebar.info(f"✅ 식약처 DB '{base_food}' 연동 완료")
                     else:
-                        st.sidebar.error(f"❌ DB에서 '{kw}' 데이터를 찾을 수 없습니다.")
+                        st.sidebar.error(f"❌ DB에서 '{base_food}' 데이터를 찾을 수 없습니다.")
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (당류 법적 용어 및 DB 표준어 필터 적용)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (DB 세부조건 정밀 매칭 적용)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
