@@ -24,6 +24,9 @@ st.markdown("""
     .section-title { font-size: 20px; font-weight: bold; color: #1a252f; border-bottom: 2px solid #34495e; padding-bottom: 8px; margin-top: 10px; margin-bottom: 15px; }
     .metric-box { text-align: center; background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
     .metric-num { font-size: 26px; font-weight: bold; margin-top: 5px; display: block; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 10px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background-color: #f2f2f2; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -52,7 +55,7 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB 호출 함수 (인코딩 버그 수정)
+# 3-2. 식약처 영양성분 DB 호출 함수 (인코딩 완벽 수정 및 JSON 에러 방어)
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     
@@ -64,22 +67,29 @@ def query_food_nutrient_db(food_name):
     search_name = std_dict.get(food_name.strip(), food_name.strip())
     
     service_id = "I2790"
-    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={search_name}"
+    # 식약처 REST Path 방식에 맞춘 단일 URL 인코딩
+    encoded_food = urllib.parse.quote(search_name)
+    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={encoded_food}"
     
     try:
         response = requests.get(url, timeout=15)
         if response.status_code == 200:
-            res_json = response.json()
+            try:
+                res_json = response.json()
+            except ValueError:
+                st.sidebar.error(f"식약처 서버 응답 오류 (JSON이 아님): {search_name}")
+                return None
+                
             if 'RESULT' in res_json and res_json['RESULT'].get('CODE') != 'INFO-000':
                 st.sidebar.error(f"식약처 API 오류 ({search_name}): {res_json['RESULT'].get('MSG')}")
                 return None
             if service_id in res_json and 'row' in res_json[service_id]:
                 return res_json[service_id]['row']
     except Exception as e: 
-        st.sidebar.error(f"통신 에러 ({search_name}): {e}")
+        st.sidebar.error(f"통신 에러 ({search_name}): 서버 연결 실패")
     return None
 
-# 4-1. Auto Pre-Scan: 대분류 명사(검색용)와 소분류 조건(매칭용)을 쌍으로 추출하는 로직 도입
+# 4-1. Auto Pre-Scan
 def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel('gemini-2.5-flash')
     payload = []
@@ -89,29 +99,23 @@ def auto_extract_db_keywords_json(main_images):
         payload.append(img)
     prompt = """
     당신은 식품 상세페이지에서 외부 영양성분 DB 대조에 필요한 '검색어'와 '세부 조건'을 추출하는 AI입니다.
-    이미지를 훑어보고, 타 식품(쇠고기, 닭고기, 대두 등)과 수치를 비교하는 인포그래픽이 있다면, 
+    이미지를 훑어보고, 타 식품(쇠고기, 닭고기, 대두 등)과 수치를 비교하는 마케팅 자료가 있다면, 
     API 검색용 '대분류 명사'를 Key로, 시안에 적힌 '세부 수식어(괄호 안 글씨 등)'를 Value로 하는 JSON 객체를 출력하십시오.
     
-    [예시]
-    시안에 '쇠고기(한우, 등심 구운것)', '닭고기(구운것)', '대두(노란콩 말린것)'이라고 적혀 있다면:
-    {"쇠고기": "한우, 등심 구운것", "닭고기": "구운것", "대두": "노란콩 말린것"}
-    
-    비교 자료가 없다면 오직 "NONE" 이라고만 출력하십시오. 절대 마크다운(```json)이나 부연설명을 넣지 말고 순수 JSON 또는 NONE만 출력하십시오.
+    [예시] {"쇠고기": "한우, 등심 구운것", "닭고기": "구운것", "대두": "노란콩 말린것"}
+    비교 자료가 없다면 오직 "NONE" 이라고만 출력하십시오.
     """
     payload.append(prompt)
     try:
         response = model.generate_content(payload)
         res_text = response.text.strip()
         if res_text == "NONE" or not res_text: return {}
-        
-        # 마크다운 찌꺼기 제거
         res_text = re.sub(r'```json\s*', '', res_text)
         res_text = re.sub(r'```\s*', '', res_text)
-        
         return json.loads(res_text)
     except Exception: return {}
 
-# 4-2. 실시간 AI 비전 분석 로직 (세부 수식어 매칭 강제 및 범용 룰 탑재)
+# 4-2. 실시간 AI 비전 분석 로직 (비교 대조표 Table 생성 강제 룰 탑재)
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     current_date_str = datetime.now().strftime("%Y년 %m월 %d일")
@@ -137,7 +141,7 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
             except: pass
                 
     prompt = f"""
-    당신은 엄격한 품질관리(QC) 전문가입니다. 특정 제품에 국한되지 않는 범용적인 잣대로 각 시안 조각(인덱스)을 검토하십시오.
+    당신은 엄격한 품질관리(QC) 전문가입니다. 제공된 시안 조각을 검토하십시오.
     
     [식약처 법령 지식 베이스]
     {legal_text}
@@ -145,37 +149,35 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     [자동 추출된 국가 공인 영양성분 DB 데이터]
     {db_context_text if db_context_text else "경고: 외부 DB 데이터가 존재하지 않습니다."}
     
-    [필수 강제 체크리스트 - 범용성 및 법적 엄격성 보장]
+    [필수 강제 체크리스트 - 스킵 절대 금지]
     
-    🔥 1. DB 비교 수치 세부 조건 정밀 검증:
-       - 위 제공된 DB 데이터 텍스트를 보면 '[검색어 OOO (시안 내 세부조건: XXX)]' 형태로 타겟 조건이 명시되어 있습니다.
-       - 시안 내 비교 대상의 세부 수식어(예: 노란콩 말린것)를 읽고, DB 결과 50개 중에서 이 조건(또는 '황대두 건조' 같은 행정 유의어)에 정확히 부합하는 항목의 수치를 대조하십시오.
-       - 수치가 일치하면 "risk_level": "정상"으로 "식약처 DB(세부명칭 매칭 완료) 수치 일치하여 적합함"을 명시하십시오. 불일치하면 "치명적 위반"으로 적발하십시오.
+    🔥 1. DB 비교 수치 세부 조건 정밀 검증 및 **[비교 표 생성 강제]**:
+       - 시안 내 비교 대상의 세부 수식어(예: 노란콩 말린것)를 읽고, DB 결과 중에서 부합하는 항목의 수치를 대조하십시오.
+       - 대조 결과를 반드시 아래 형식의 **마크다운 표(Table)**로 작성하여 `discrepancy_analysis` 항목 첫 줄에 포함시키십시오.
+         | 비교 항목 | 시안 표기 수치 | 식약처 DB 실제 수치 | 일치 여부 |
+         |---|---|---|---|
+         | 쇠고기(등심 구운것) | 18.9g | 18.9g | 일치 (적합) |
+       - 만약 DB 데이터가 없다면(경고 문구만 있다면) 절대 지레짐작으로 '적합'이라고 쓰지 말고, 표 안에 "DB 통신 실패로 검증 불가"라고 팩트만 적고 risk_level을 "수정 권고"로 맞추십시오.
 
-    🔥 2. 당류 관련 법적 용어 엄격 구분 (ZERO vs 무가당/무첨가):
-       - [무당, 설탕 ZERO, 슈가 ZERO]: 최종 제품 100g(ml)당 당류 '0.5g 미만'일 때만 합법.
-       - [무가당, 설탕 무첨가]: 인위적 당류 첨가 없음. 원물 유래 당류가 0.5g 이상 표기되어 있다면 'ZERO'는 쓸 수 없고 반드시 '무가당/설탕 무첨가'로 수정 지시하십시오.
+    🔥 2. 당류 법적 용어 엄격 구분:
+       - 원물 유래 당류가 0.5g 이상 표기되어 있다면 절대 'ZERO'는 쓸 수 없으며 '설탕 무첨가'로 수정 권고하십시오.
 
-    🔥 3. 시간 조작 과장광고 범용 방어:
-       - 데이터 산정 기간이 현재 시점({current_date_str})을 초과하는 미래 시점을 포함하는지 팩트 대조하여 적발하십시오.
-
-    🔥 4. 배합 기만 및 모순 범용 방어:
-       - 특정 하위 원료를 '100%' 강조/단독 묘사했으나 원재료명에 상위 범주나 타 원료가 혼합되어 있는지 대조하십시오.
-       - 상하단 칼로리 모순 에러는 '영양정보표'가 보이는 단일 인덱스에서만 딱 1번 적발하십시오.
-       - 연출 사진 주변에 '연출된 이미지' 면책 문구가 있는지 확인하십시오.
+    🔥 3. 시간 조작 방어 & 기만 방어:
+       - 산정 기간이 현재({current_date_str})를 초과하는 미래인지 대조하십시오.
+       - 특정 하위 원료를 '100%' 강조했으나 원재료명에 상위 범주나 타 원료가 섞여있는지 확인하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
       {{
-        "image_index": 구간 인덱스 번호 (0부터 시작, 업로드된 이미지 순서와 동일함),
+        "image_index": 구간 인덱스 번호 (0부터 시작),
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
-        "title": "검토 항목 요약 (예: DB 세부조건 수치 적합 확인, 당류 표기 위반 등)",
+        "title": "검토 항목 요약",
         "marketing_text": "상세페이지 추출 원문",
-        "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 날짜 팩트 또는 당류 관련 법적 잣대",
-        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 적합 시 반드시 칭찬/적합 판정 문구 포함)"
+        "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 또는 법적 잣대",
+        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 대조 시 반드시 마크다운 표 삽입)"
       }}
     ]
-    * 해당 이미지에 위반사항이나 DB 적합 판정이 전혀 없다면 risk_level "정상" 객체(내용: 특이사항 없음)를 반환하십시오.
+    * 해당 이미지에 위반사항이나 표를 그릴 DB 데이터가 없다면 risk_level "정상" 객체(내용: 특이사항 없음)를 반환하십시오.
     """
     content_payload.append(prompt)
     
@@ -239,15 +241,14 @@ else:
                     st.sidebar.success(f"🤖 탐지 완료: [{base_food}] ➔ 타겟 조건: {detail_cond}")
                     db_data = query_food_nutrient_db(base_food)
                     if db_data:
-                        # 메인 AI가 세부 조건을 잊지 않도록 헤더에 강력하게 명시
                         final_db_context_text += f"\n[검색어 '{base_food}' (시안 내 세부조건: {detail_cond}) 식약처 공인 데이터 최대 50건]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
                         st.sidebar.info(f"✅ 식약처 DB '{base_food}' 연동 완료")
                     else:
-                        st.sidebar.error(f"❌ DB에서 '{base_food}' 데이터를 찾을 수 없습니다.")
+                        st.sidebar.warning(f"⚠️ DB에서 '{base_food}' 데이터를 찾을 수 없거나 통신 실패했습니다.")
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (DB 세부조건 정밀 매칭 적용)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (비교 표 Table 강제 생성 중)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
