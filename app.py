@@ -55,7 +55,7 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB 호출 함수 (인코딩 완벽 수정 및 JSON 에러 방어)
+# 3-2. 식약처 영양성분 DB 호출 함수 [통신 방어막 및 XML 강제 파싱 적용]
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     
@@ -67,26 +67,36 @@ def query_food_nutrient_db(food_name):
     search_name = std_dict.get(food_name.strip(), food_name.strip())
     
     service_id = "I2790"
-    # 식약처 REST Path 방식에 맞춘 단일 URL 인코딩
-    encoded_food = urllib.parse.quote(search_name)
-    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={encoded_food}"
+    encoded_name = urllib.parse.quote(search_name)
+    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={encoded_name}"
     
     try:
         response = requests.get(url, timeout=15)
-        if response.status_code == 200:
-            try:
-                res_json = response.json()
-            except ValueError:
-                st.sidebar.error(f"식약처 서버 응답 오류 (JSON이 아님): {search_name}")
-                return None
-                
-            if 'RESULT' in res_json and res_json['RESULT'].get('CODE') != 'INFO-000':
-                st.sidebar.error(f"식약처 API 오류 ({search_name}): {res_json['RESULT'].get('MSG')}")
-                return None
-            if service_id in res_json and 'row' in res_json[service_id]:
-                return res_json[service_id]['row']
+        res_text = response.text.strip()
+        
+        # 식약처가 JSON 대신 XML/HTML 에러를 던질 경우의 방어 로직
+        if res_text.startswith('<'):
+            msg_match = re.search(r'<MSG>(.*?)</MSG>', res_text)
+            if msg_match:
+                st.sidebar.error(f"식약처 API 거부 ({search_name}): {msg_match.group(1)}")
+            else:
+                st.sidebar.error(f"식약처 서버 비정상 응답 ({search_name}): XML/HTML 반환됨")
+            return None
+            
+        res_json = json.loads(res_text)
+        
+        if 'RESULT' in res_json and res_json['RESULT'].get('CODE') != 'INFO-000':
+            st.sidebar.error(f"식약처 API 오류 ({search_name}): {res_json['RESULT'].get('MSG')}")
+            return None
+            
+        if service_id in res_json and 'row' in res_json[service_id]:
+            return res_json[service_id]['row']
+            
+    except json.JSONDecodeError:
+        st.sidebar.error(f"식약처 서버 오류 ({search_name}): 응답을 해석할 수 없습니다.")
     except Exception as e: 
-        st.sidebar.error(f"통신 에러 ({search_name}): 서버 연결 실패")
+        st.sidebar.error(f"통신 에러 ({search_name}): 서버 연결 실패 ({e})")
+        
     return None
 
 # 4-1. Auto Pre-Scan
@@ -99,7 +109,7 @@ def auto_extract_db_keywords_json(main_images):
         payload.append(img)
     prompt = """
     당신은 식품 상세페이지에서 외부 영양성분 DB 대조에 필요한 '검색어'와 '세부 조건'을 추출하는 AI입니다.
-    이미지를 훑어보고, 타 식품(쇠고기, 닭고기, 대두 등)과 수치를 비교하는 마케팅 자료가 있다면, 
+    이미지를 훑어보고, 타 식품과 수치를 비교하는 마케팅 자료가 있다면, 
     API 검색용 '대분류 명사'를 Key로, 시안에 적힌 '세부 수식어(괄호 안 글씨 등)'를 Value로 하는 JSON 객체를 출력하십시오.
     
     [예시] {"쇠고기": "한우, 등심 구운것", "닭고기": "구운것", "대두": "노란콩 말린것"}
@@ -107,7 +117,7 @@ def auto_extract_db_keywords_json(main_images):
     """
     payload.append(prompt)
     try:
-        response = model.generate_content(payload)
+        response = model.generate_content(payload, generation_config=genai.types.GenerationConfig(temperature=0.0))
         res_text = response.text.strip()
         if res_text == "NONE" or not res_text: return {}
         res_text = re.sub(r'```json\s*', '', res_text)
@@ -115,7 +125,7 @@ def auto_extract_db_keywords_json(main_images):
         return json.loads(res_text)
     except Exception: return {}
 
-# 4-2. 실시간 AI 비전 분석 로직 (비교 대조표 Table 생성 강제 룰 탑재)
+# 4-2. 실시간 AI 비전 분석 로직 
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     current_date_str = datetime.now().strftime("%Y년 %m월 %d일")
@@ -141,7 +151,7 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
             except: pass
                 
     prompt = f"""
-    당신은 엄격한 품질관리(QC) 전문가입니다. 제공된 시안 조각을 검토하십시오.
+    당신은 엄격하면서도 유연한 품질관리(QC) 전문가입니다. 제공된 시안 조각을 검토하십시오.
     
     [식약처 법령 지식 베이스]
     {legal_text}
@@ -151,20 +161,26 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     
     [필수 강제 체크리스트 - 스킵 절대 금지]
     
-    🔥 1. DB 비교 수치 세부 조건 정밀 검증 및 **[비교 표 생성 강제]**:
+    🌟 0. 마케팅 수사(Puffery) 주의 환기(Flagging) 룰:
+       - 주관적이고 감성적인 마케팅 문구를 발견하면 "risk_level": "수정 권고"로 분류하고 "마케팅적 강조 표현이므로 법적 위반 소지는 낮으나 과대광고 소지가 없는지 검토 요망"이라고 기재하십시오.
+
+    🔥 1. DB 비교 수치 세부 조건 정밀 검증 및 [비교 표 생성 강제]:
        - 시안 내 비교 대상의 세부 수식어(예: 노란콩 말린것)를 읽고, DB 결과 중에서 부합하는 항목의 수치를 대조하십시오.
-       - 대조 결과를 반드시 아래 형식의 **마크다운 표(Table)**로 작성하여 `discrepancy_analysis` 항목 첫 줄에 포함시키십시오.
+       - 대조 결과를 반드시 아래 형식의 마크다운 표(Table)로 작성하여 discrepancy_analysis 첫 줄에 포함시키십시오.
          | 비교 항목 | 시안 표기 수치 | 식약처 DB 실제 수치 | 일치 여부 |
          |---|---|---|---|
          | 쇠고기(등심 구운것) | 18.9g | 18.9g | 일치 (적합) |
-       - 만약 DB 데이터가 없다면(경고 문구만 있다면) 절대 지레짐작으로 '적합'이라고 쓰지 말고, 표 안에 "DB 통신 실패로 검증 불가"라고 팩트만 적고 risk_level을 "수정 권고"로 맞추십시오.
 
     🔥 2. 당류 법적 용어 엄격 구분:
-       - 원물 유래 당류가 0.5g 이상 표기되어 있다면 절대 'ZERO'는 쓸 수 없으며 '설탕 무첨가'로 수정 권고하십시오.
+       - 영양정보표에 기재된 원물 유래 당류가 0.5g 이상이라면 마케팅 시안의 'ZERO' 표기를 금지하고 '설탕 무첨가/무가당'으로 수정 권고하십시오.
 
-    🔥 3. 시간 조작 방어 & 기만 방어:
-       - 산정 기간이 현재({current_date_str})를 초과하는 미래인지 대조하십시오.
-       - 특정 하위 원료를 '100%' 강조했으나 원재료명에 상위 범주나 타 원료가 섞여있는지 확인하십시오.
+    🔥 3. 시간 조작 방어:
+       - 매출/수상 산정 기간이 현재({current_date_str})를 초과하는 미래인지 대조하십시오.
+
+    🔥 4. 제조공정도 배합 기만 방어 (팩시안 원재료명 강제 교차 대조):
+       - 마케팅 시안에서 특정 하위 원료(예: 약콩)만을 100% 단독 사용한 것처럼 묘사했다면, [팩시안]의 '원재료명' 정보를 찾아 실제 배합비를 교차 검증하십시오.
+       - 팩시안 원재료명에 상위 범주나 타 원료가 주성분으로 혼합되어 있다면 "치명적 위반"으로 적발하십시오.
+       - 상하단 칼로리 모순 에러는 '영양정보표'가 보이는 단일 인덱스에서만 딱 1번 적발하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
@@ -183,7 +199,7 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     
     for attempt in range(3):
         try:
-            response = model.generate_content(content_payload, generation_config=genai.types.GenerationConfig(response_mime_type="application/json"))
+            response = model.generate_content(content_payload, generation_config=genai.types.GenerationConfig(temperature=0.0, response_mime_type="application/json"))
             return response.text, chunk_list
         except Exception as e:
             if "429" in str(e) or "Quota exceeded" in str(e):
@@ -244,11 +260,11 @@ else:
                         final_db_context_text += f"\n[검색어 '{base_food}' (시안 내 세부조건: {detail_cond}) 식약처 공인 데이터 최대 50건]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
                         st.sidebar.info(f"✅ 식약처 DB '{base_food}' 연동 완료")
                     else:
-                        st.sidebar.warning(f"⚠️ DB에서 '{base_food}' 데이터를 찾을 수 없거나 통신 실패했습니다.")
+                        st.sidebar.warning(f"⚠️ DB에서 '{base_food}' 데이터 검색 실패 (에러 메시지를 확인하세요)")
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (비교 표 Table 강제 생성 중)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (DB 검증 표 생성 강제 적용)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
@@ -266,7 +282,7 @@ else:
                 
                 stat_c1, stat_c2, stat_c3 = st.columns(3)
                 with stat_c1: st.markdown(f'<div class="metric-box">🚨 치명적 위반 <br><span class="metric-num" style="color:#dc3545;">{critical_cnt}건</span></div>', unsafe_allow_html=True)
-                with stat_c2: st.markdown(f'<div class="metric-box">⚠️ 수정 권고 <br><span class="metric-num" style="color:#f39c12;">{warning_cnt}건</span></div>', unsafe_allow_html=True)
+                with stat_c2: st.markdown(f'<div class="metric-box">⚠️ 수정 권고(리뷰 요망) <br><span class="metric-num" style="color:#f39c12;">{warning_cnt}건</span></div>', unsafe_allow_html=True)
                 with stat_c3: st.markdown(f'<div class="metric-box">✅ 정상 구간 <br><span class="metric-num" style="color:#2ecc71;">{pass_cnt}건</span></div>', unsafe_allow_html=True)
                 
                 st.write("")
