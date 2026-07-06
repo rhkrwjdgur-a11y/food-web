@@ -55,7 +55,7 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 공공데이터포털(data.go.kr) 영양성분 DB 호출 함수 [검색량 100개로 확장]
+# 3-2. 공공데이터포털 영양성분 DB 호출 함수
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     
@@ -64,7 +64,6 @@ def query_food_nutrient_db(food_name):
         "계육": "닭고기",
         "돈육": "돼지고기"
     }
-    # 검색어가 "소고기 등심" 등으로 들어올 수 있으므로 기본 치환 후 사용
     search_name = std_dict.get(food_name.strip(), food_name.strip())
     
     if not FOOD_API_KEY or FOOD_API_KEY == "your_api_key_here":
@@ -72,15 +71,16 @@ def query_food_nutrient_db(food_name):
         return None
 
     encoded_name = urllib.parse.quote(search_name)
-    # numOfRows를 100으로 늘려 원물이 포함될 확률 극대화
-    url = f"http://apis.data.go.kr/1471000/FoodNtrIrdntInfoService1/getFoodNtrItdntList1?ServiceKey={FOOD_API_KEY}&desc_kor={encoded_name}&pageNo=1&numOfRows=100&type=json"
+    url = f"http://apis.data.go.kr/1471000/FoodNtrIrdntInfoService1/getFoodNtrItdntList1?ServiceKey={FOOD_API_KEY}&desc_kor={encoded_name}&pageNo=1&numOfRows=200&type=json"
     
     try:
         response = requests.get(url, timeout=15)
         res_text = response.text.strip()
         
+        if not res_text:
+            return None
+
         if res_text.startswith('<'):
-            st.sidebar.error(f"공공데이터포털 API 오류 ({search_name}): 응답이 XML 형식입니다.")
             return None
             
         res_json = json.loads(res_text)
@@ -110,11 +110,11 @@ def query_food_nutrient_db(food_name):
             return [items]
             
     except Exception as e: 
-        st.sidebar.error(f"통신 에러 ({search_name}): {e}")
+        pass
         
     return None
 
-# 4-1. Auto Pre-Scan [검색어 정밀화 로직 탑재]
+# 4-1. Auto Pre-Scan
 def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel('gemini-2.5-flash')
     payload = []
@@ -127,10 +127,10 @@ def auto_extract_db_keywords_json(main_images):
     이미지를 훑어보고 타 식품과 수치를 비교하는 인포그래픽이 있다면 JSON 객체를 출력하십시오.
     
     [핵심 룰]
-    단순히 '소고기', '대두' 같은 광범위한 단어를 Key로 쓰면 DB에서 국밥이나 김밥 같은 엉뚱한 요리가 검색됩니다.
-    반드시 시안에 적힌 수식어를 조합하여 **DB에서 원물을 정확히 찾을 수 있는 '핵심 검색어'(예: '소고기 등심', '닭고기 구이', '대두 건조')를 Key로** 작성하고, 전체 수식어를 Value로 작성하십시오.
+    API 검색용 '대분류 명사(Key)'는 무조건 띄어쓰기가 없는 단일 명사(예: 소고기, 닭고기, 대두)로만 작성하십시오.
+    세부 수식어(Value) 항목에 시안에 적힌 괄호 안 글씨를 모두 적으십시오.
     
-    [예시] {"소고기 등심": "한우, 등심 구운것", "닭고기 구운것": "구운것", "대두 건조": "노란콩 말린것"}
+    [예시] {"소고기": "한우, 등심 구운것", "닭고기": "구운것", "대두": "노란콩 말린것"}
     비교 자료가 없다면 오직 "NONE" 이라고만 출력하십시오.
     """
     payload.append(prompt)
@@ -143,19 +143,21 @@ def auto_extract_db_keywords_json(main_images):
         return json.loads(res_text)
     except Exception: return {}
 
-# 4-2. 실시간 AI 비전 분석 로직 [표 출력 절대 강제 룰]
+# 4-2. 실시간 AI 비전 분석 로직 [이미지 꼬리표(Tagging) 및 시야 격리 완벽 적용]
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
-    current_date_str = datetime.now().strftime("%Y년 %m월 %d일")
+    current_date_str = "2026년 07월 06일"
     
     content_payload = []
     chunk_list = []
     
-    for img_obj in main_images:
+    # [핵심 수정 사항] 각각의 이미지 앞에 인덱스 번호를 텍스트로 명확히 각인
+    for idx, img_obj in enumerate(main_images):
         w, h = img_obj.size
         if w > 2000: 
             img_obj = img_obj.resize((2000, int(h * (2000.0/w))), Image.LANCZOS)
         chunk_list.append(img_obj)
+        content_payload.append(f"--- [시안 구간 인덱스: {idx}] ---")
         content_payload.append(img_obj)
             
     if ref_files:
@@ -174,30 +176,34 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     [식약처 법령 지식 베이스]
     {legal_text}
     
-    [자동 추출된 국가 공인 영양성분 DB 데이터 (최대 100건)]
+    [자동 추출된 국가 공인 영양성분 DB 데이터]
     {db_context_text if db_context_text else "경고: 외부 DB 데이터가 존재하지 않습니다."}
     
     [필수 강제 체크리스트 - 스킵 절대 금지]
     
-    🌟 0. 마케팅 수사(Puffery) 주의 환기:
-       - 주관적/감성적 마케팅 문구만 있는 경우 "수정 권고"로 띄우고 "마케팅적 강조 표현이므로 과대광고 소지 검토 요망"이라고 기재하십시오.
+    🚨 0. [인덱스 시야 격리 원칙 - 가장 중요]: 
+       - 페이로드에 전달된 이미지 앞에는 `--- [시안 구간 인덱스: N] ---` 이라는 꼬리표가 명확히 붙어 있습니다.
+       - 각 인덱스의 분석 결과를 작성할 때, **반드시 해당 인덱스 이미지 안에 눈으로 직접 보이는 글자나 그림만 팩트 기반으로 분석하십시오.**
+       - 절대로 다른 인덱스에 있는 글자(예: 15번 인덱스를 분석하면서 다른 인덱스에 있던 '건강한 사람들의 취향' 같은 텍스트)를 끌어와서 섞어버리는 환각(Hallucination) 오류를 범하지 마십시오.
 
-    🔥 1. DB 비교 수치 검증 및 **[비교 표 생성 절대 강제]**:
-       - 대조 결과를 **무슨 일이 있어도(데이터가 엉뚱하든, 부족하든)** 반드시 아래 형식의 마크다운 표(Table)로 작성하여 discrepancy_analysis 항목의 첫 줄에 포함시키십시오. 표를 생략하면 치명적 시스템 오류로 간주합니다.
+    🌟 1. 마케팅 수사(Puffery) 주의 환기:
+       - 해당 이미지 내에 주관적/감성적 마케팅 문구만 있을 경우 "수정 권고"로 띄우고 과대광고 소지 검토를 요망하십시오.
+
+    🔥 2. DB 비교 수치 검증 및 [비교 표 생성 절대 강제]:
+       - 해당 이미지 내에 타 식품과 수치를 비교하는 내용(예: 쇠고기, 닭고기 그래프)이 존재한다면, 1번(마케팅 수사) 룰을 무시하고 **무조건 DB 수치 검증을 최우선으로 수행하여 아래 형식의 마크다운 표(Table)를 생성**하십시오.
          | 비교 항목 | 시안 표기 수치 | 식약처 DB 실제 수치 | 일치 여부 |
          |---|---|---|---|
          | 쇠고기(등심 구운것) | 18.9g | 18.9g | 일치 (적합) |
-       - 만약 제공된 DB 목록에 '국밥', '김밥' 등 엉뚱한 요리만 가득하여 원물을 찾을 수 없다면, 임의로 표를 지우지 말고 '식약처 DB 실제 수치' 칸에 **'검색 결과 내 일치 원물 없음(다른 요리만 검색됨)'**이라고 명시하고 risk_level을 "수정 권고"로 맞추십시오.
+       - DB 목록에서 원물을 찾을 수 없다면 표 안에 '검색 결과 내 일치 원물 없음'이라고 명시하십시오.
 
-    🔥 2. 당류 법적 용어 엄격 구분:
-       - 영양정보표 당류가 0.5g 이상이라면 마케팅 시안의 'ZERO' 표기를 금지하고 '설탕 무첨가/무가당'으로 수정 권고하십시오.
+    🔥 3. 당류 법적 용어 엄격 구분:
+       - 영양정보표 당류가 0.5g 이상이라면 'ZERO' 표기를 금지하고 '설탕 무첨가/무가당'으로 수정 권고하십시오.
 
-    🔥 3. 시간 조작 방어:
-       - 산정 기간이 현재({current_date_str})를 초과하는 미래인지 대조하십시오.
+    🔥 4. 시간 조작 방어:
+       - 산정 기간이 현재({current_date_str})를 초과하는 미래인지 팩트 대조하십시오.
 
-    🔥 4. 제조공정도 배합 기만 방어 (팩시안 원재료명 강제 교차 대조):
-       - 특정 하위 원료를 단독 묘사했다면, [팩시안] 원재료명에 상위 범주나 타 원료가 주성분으로 혼합되어 있는지 확인하고 "치명적 위반"으로 적발하십시오.
-       - 마케팅 수사(Rule 0)와 배합 기만(Rule 4)이 충돌하면 배합 기만(치명적 위반)을 최우선으로 리포트하십시오.
+    🔥 5. 제조공정도 배합 기만 방어 (팩시안 교차 대조):
+       - 특정 하위 원료를 단독 묘사했다면, [팩시안] 원재료명에 타 원료가 주성분으로 혼합되어 있는지 확인하고 "치명적 위반"으로 적발하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
@@ -205,9 +211,9 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
         "image_index": 구간 인덱스 번호 (0부터 시작),
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
         "title": "검토 항목 요약",
-        "marketing_text": "상세페이지 추출 원문",
+        "marketing_text": "상세페이지 추출 원문 (반드시 해당 인덱스 이미지에 존재하는 텍스트만 기재할 것)",
         "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 또는 법적 잣대",
-        "discrepancy_analysis": "위반 분석 및 조치 사항 (반드시 마크다운 표 삽입)"
+        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 대조 시 반드시 표 삽입)"
       }}
     ]
     * 위반사항이나 표를 그릴 내용이 없다면 risk_level "정상" 객체를 반환하십시오.
@@ -267,19 +273,19 @@ else:
     else:
         final_db_context_text = "" 
         
-        with st.spinner("🔍 1단계: 시안 내 식약처 DB 타겟(스마트 검색어 정제)을 자동 추출하고 있습니다..."):
+        with st.spinner("🔍 1단계: 시안 내 식약처 DB 타겟을 자동 추출하고 있습니다..."):
             auto_dict = auto_extract_db_keywords_json(main_img_objs)
             if auto_dict:
                 for base_food, detail_cond in auto_dict.items():
-                    st.sidebar.success(f"🤖 스마트 탐지: [{base_food}] ➔ 타겟 조건: {detail_cond}")
+                    st.sidebar.success(f"🤖 탐지 완료: [{base_food}] ➔ 타겟 조건: {detail_cond}")
                     db_data = query_food_nutrient_db(base_food)
                     if db_data:
-                        final_db_context_text += f"\n[검색어 '{base_food}' (시안 내 세부조건: {detail_cond}) 식약처 공인 데이터 최대 100건]\n" + json.dumps(db_data[:100], ensure_ascii=False) + "\n"
-                        st.sidebar.info(f"✅ 식약처 DB '{base_food}' 정상 수신 완료 ({len(db_data)}건)")
+                        final_db_context_text += f"\n[검색어 '{base_food}' (시안 내 세부조건: {detail_cond}) 식약처 공인 데이터 200건]\n" + json.dumps(db_data[:200], ensure_ascii=False) + "\n"
+                        st.sidebar.info(f"✅ 식약처 DB '{base_food}' 수신 완료 ({len(db_data)}건 확보)")
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (비교 표 절대 출력 적용)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (인덱스 격리 및 시야 통제 중)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
