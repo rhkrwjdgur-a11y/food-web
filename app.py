@@ -55,7 +55,7 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 공공데이터포털(data.go.kr) 영양성분 DB 호출 함수
+# 3-2. 공공데이터포털(data.go.kr) 영양성분 DB 호출 함수 [검색량 100개로 확장]
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     
@@ -64,36 +64,39 @@ def query_food_nutrient_db(food_name):
         "계육": "닭고기",
         "돈육": "돼지고기"
     }
+    # 검색어가 "소고기 등심" 등으로 들어올 수 있으므로 기본 치환 후 사용
     search_name = std_dict.get(food_name.strip(), food_name.strip())
     
     if not FOOD_API_KEY or FOOD_API_KEY == "your_api_key_here":
         st.sidebar.error("API 키가 설정되지 않았습니다.")
         return None
 
-    base_url = "https://apis.data.go.kr/1471000/FoodNtrCpntDbInfo02/getFoodNtrCpntDbInq02"
     encoded_name = urllib.parse.quote(search_name)
-    url = f"{base_url}?serviceKey={FOOD_API_KEY}&pageNo=1&numOfRows=50&type=json&DESC_KOR={encoded_name}"
+    # numOfRows를 100으로 늘려 원물이 포함될 확률 극대화
+    url = f"http://apis.data.go.kr/1471000/FoodNtrIrdntInfoService1/getFoodNtrItdntList1?ServiceKey={FOOD_API_KEY}&desc_kor={encoded_name}&pageNo=1&numOfRows=100&type=json"
     
     try:
         response = requests.get(url, timeout=15)
         res_text = response.text.strip()
         
         if res_text.startswith('<'):
-            st.sidebar.error(f"공공데이터포털 API 거부 ({search_name}): 인증키가 유효하지 않거나 트래픽 초과입니다.")
+            st.sidebar.error(f"공공데이터포털 API 오류 ({search_name}): 응답이 XML 형식입니다.")
             return None
             
         res_json = json.loads(res_text)
         
-        body = res_json.get('body') or res_json.get('response', {}).get('body', {})
-        header = res_json.get('header') or res_json.get('response', {}).get('header', {})
+        if 'cmmMsgHeader' in res_json:
+            return None
+        if 'OpenAPI_ServiceResponse' in res_json:
+            return None
         
+        header = res_json.get('header') or res_json.get('response', {}).get('header', {})
         result_code = header.get('resultCode')
-        result_msg = header.get('resultMsg', '메시지 없음')
         
         if result_code and result_code != '00':
-            st.sidebar.error(f"API 응답 오류 ({search_name}): [{result_code}] {result_msg}")
             return None
             
+        body = res_json.get('body') or res_json.get('response', {}).get('body', {})
         items = body.get('items', [])
         
         if not items:
@@ -106,14 +109,12 @@ def query_food_nutrient_db(food_name):
         else:
             return [items]
             
-    except json.JSONDecodeError:
-        st.sidebar.error(f"JSON 파싱 에러 ({search_name}): 서버 응답을 해석할 수 없습니다.")
     except Exception as e: 
-        st.sidebar.error(f"통신 에러 ({search_name}): 서버 연결 실패 ({e})")
+        st.sidebar.error(f"통신 에러 ({search_name}): {e}")
         
     return None
 
-# 4-1. Auto Pre-Scan
+# 4-1. Auto Pre-Scan [검색어 정밀화 로직 탑재]
 def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel('gemini-2.5-flash')
     payload = []
@@ -123,10 +124,13 @@ def auto_extract_db_keywords_json(main_images):
         payload.append(img)
     prompt = """
     당신은 식품 상세페이지에서 외부 영양성분 DB 대조에 필요한 '검색어'와 '세부 조건'을 추출하는 AI입니다.
-    이미지를 훑어보고, 타 식품과 수치를 비교하는 마케팅 자료가 있다면, 
-    API 검색용 '대분류 명사'를 Key로, 시안에 적힌 '세부 수식어(괄호 안 글씨 등)'를 Value로 하는 JSON 객체를 출력하십시오.
+    이미지를 훑어보고 타 식품과 수치를 비교하는 인포그래픽이 있다면 JSON 객체를 출력하십시오.
     
-    [예시] {"쇠고기": "한우, 등심 구운것", "닭고기": "구운것", "대두": "노란콩 말린것"}
+    [핵심 룰]
+    단순히 '소고기', '대두' 같은 광범위한 단어를 Key로 쓰면 DB에서 국밥이나 김밥 같은 엉뚱한 요리가 검색됩니다.
+    반드시 시안에 적힌 수식어를 조합하여 **DB에서 원물을 정확히 찾을 수 있는 '핵심 검색어'(예: '소고기 등심', '닭고기 구이', '대두 건조')를 Key로** 작성하고, 전체 수식어를 Value로 작성하십시오.
+    
+    [예시] {"소고기 등심": "한우, 등심 구운것", "닭고기 구운것": "구운것", "대두 건조": "노란콩 말린것"}
     비교 자료가 없다면 오직 "NONE" 이라고만 출력하십시오.
     """
     payload.append(prompt)
@@ -139,7 +143,7 @@ def auto_extract_db_keywords_json(main_images):
         return json.loads(res_text)
     except Exception: return {}
 
-# 4-2. 실시간 AI 비전 분석 로직 (치명적 위반 최우선 룰 탑재)
+# 4-2. 실시간 AI 비전 분석 로직 [표 출력 절대 강제 룰]
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     current_date_str = datetime.now().strftime("%Y년 %m월 %d일")
@@ -170,7 +174,7 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     [식약처 법령 지식 베이스]
     {legal_text}
     
-    [자동 추출된 국가 공인 영양성분 DB 데이터]
+    [자동 추출된 국가 공인 영양성분 DB 데이터 (최대 100건)]
     {db_context_text if db_context_text else "경고: 외부 DB 데이터가 존재하지 않습니다."}
     
     [필수 강제 체크리스트 - 스킵 절대 금지]
@@ -178,9 +182,12 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     🌟 0. 마케팅 수사(Puffery) 주의 환기:
        - 주관적/감성적 마케팅 문구만 있는 경우 "수정 권고"로 띄우고 "마케팅적 강조 표현이므로 과대광고 소지 검토 요망"이라고 기재하십시오.
 
-    🔥 1. DB 비교 수치 세부 조건 정밀 검증 및 [비교 표 생성 강제]:
-       - 시안 내 세부 수식어(예: 노란콩 말린것)를 읽고, DB 데이터가 주어졌다면 대조하여 마크다운 표(Table)를 작성하십시오.
-       - 데이터가 없으면 표에 'DB 통신 실패로 검증 불가'라고 적으십시오.
+    🔥 1. DB 비교 수치 검증 및 **[비교 표 생성 절대 강제]**:
+       - 대조 결과를 **무슨 일이 있어도(데이터가 엉뚱하든, 부족하든)** 반드시 아래 형식의 마크다운 표(Table)로 작성하여 discrepancy_analysis 항목의 첫 줄에 포함시키십시오. 표를 생략하면 치명적 시스템 오류로 간주합니다.
+         | 비교 항목 | 시안 표기 수치 | 식약처 DB 실제 수치 | 일치 여부 |
+         |---|---|---|---|
+         | 쇠고기(등심 구운것) | 18.9g | 18.9g | 일치 (적합) |
+       - 만약 제공된 DB 목록에 '국밥', '김밥' 등 엉뚱한 요리만 가득하여 원물을 찾을 수 없다면, 임의로 표를 지우지 말고 '식약처 DB 실제 수치' 칸에 **'검색 결과 내 일치 원물 없음(다른 요리만 검색됨)'**이라고 명시하고 risk_level을 "수정 권고"로 맞추십시오.
 
     🔥 2. 당류 법적 용어 엄격 구분:
        - 영양정보표 당류가 0.5g 이상이라면 마케팅 시안의 'ZERO' 표기를 금지하고 '설탕 무첨가/무가당'으로 수정 권고하십시오.
@@ -188,10 +195,9 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     🔥 3. 시간 조작 방어:
        - 산정 기간이 현재({current_date_str})를 초과하는 미래인지 대조하십시오.
 
-    🔥 4. 제조공정도 배합 기만 방어 (팩시안 원재료명 강제 교차 대조 - 최우선 순위 🚨):
-       - 시안의 제조 공정도(그림/텍스트)에서 특정 하위 원료(예: 약콩)만을 단독으로 볶거나 간다고 묘사했다면, 반드시 [팩시안]의 '원재료명' 정보를 찾아 실제 배합비를 교차 검증하십시오.
-       - 팩시안 원재료명에 해당 원료는 소량의 분말(예: 0.5%)로만 들어가고, 상위 범주(예: 대두)나 타 원료가 주성분(예: 원액두유 70%)으로 혼합되어 있다면, 이는 명백한 "치명적 위반(원재료 배합 및 제조공정 기만)"으로 적발하십시오.
-       - 한 이미지 내에 '마케팅 수사(Rule 0)'와 '배합 기만(Rule 4)'이 동시에 존재할 경우, 마케팅 수사 지적은 무시하고 무조건 가장 중대한 "치명적 위반" 하나만을 최우선으로 출력하십시오.
+    🔥 4. 제조공정도 배합 기만 방어 (팩시안 원재료명 강제 교차 대조):
+       - 특정 하위 원료를 단독 묘사했다면, [팩시안] 원재료명에 상위 범주나 타 원료가 주성분으로 혼합되어 있는지 확인하고 "치명적 위반"으로 적발하십시오.
+       - 마케팅 수사(Rule 0)와 배합 기만(Rule 4)이 충돌하면 배합 기만(치명적 위반)을 최우선으로 리포트하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
@@ -201,10 +207,10 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
         "title": "검토 항목 요약",
         "marketing_text": "상세페이지 추출 원문",
         "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 또는 법적 잣대",
-        "discrepancy_analysis": "위반 분석 및 조치 사항"
+        "discrepancy_analysis": "위반 분석 및 조치 사항 (반드시 마크다운 표 삽입)"
       }}
     ]
-    * 위반사항이나 표를 그릴 DB 데이터가 없다면 risk_level "정상" 객체를 반환하십시오.
+    * 위반사항이나 표를 그릴 내용이 없다면 risk_level "정상" 객체를 반환하십시오.
     """
     content_payload.append(prompt)
     
@@ -261,19 +267,19 @@ else:
     else:
         final_db_context_text = "" 
         
-        with st.spinner("🔍 1단계: 시안 내 식약처 DB 타겟(대분류+세부조건)을 자동 추출하고 있습니다..."):
+        with st.spinner("🔍 1단계: 시안 내 식약처 DB 타겟(스마트 검색어 정제)을 자동 추출하고 있습니다..."):
             auto_dict = auto_extract_db_keywords_json(main_img_objs)
             if auto_dict:
                 for base_food, detail_cond in auto_dict.items():
-                    st.sidebar.success(f"🤖 탐지 완료: [{base_food}] ➔ 타겟 조건: {detail_cond}")
+                    st.sidebar.success(f"🤖 스마트 탐지: [{base_food}] ➔ 타겟 조건: {detail_cond}")
                     db_data = query_food_nutrient_db(base_food)
                     if db_data:
-                        final_db_context_text += f"\n[검색어 '{base_food}' (시안 내 세부조건: {detail_cond}) 식약처 공인 데이터 최대 50건]\n" + json.dumps(db_data[:50], ensure_ascii=False) + "\n"
-                        st.sidebar.info(f"✅ 식약처 DB '{base_food}' 정상 수신 완료")
+                        final_db_context_text += f"\n[검색어 '{base_food}' (시안 내 세부조건: {detail_cond}) 식약처 공인 데이터 최대 100건]\n" + json.dumps(db_data[:100], ensure_ascii=False) + "\n"
+                        st.sidebar.info(f"✅ 식약처 DB '{base_food}' 정상 수신 완료 ({len(db_data)}건)")
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (치명적 위반 최우선 룰 적용)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (비교 표 절대 출력 적용)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
