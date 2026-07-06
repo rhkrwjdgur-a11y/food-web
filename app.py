@@ -55,7 +55,7 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 식약처 영양성분 DB 호출 함수 https://atl.kr/dokuwiki/doku.php/no_message_found_under_code_xxx_for_locale_ko
+# 3-2. 공공데이터포털(data.go.kr) 영양성분 DB 호출 함수 [엔드포인트 팩트 기반 교체]
 def query_food_nutrient_db(food_name):
     if not food_name: return None
     
@@ -67,31 +67,40 @@ def query_food_nutrient_db(food_name):
     search_name = std_dict.get(food_name.strip(), food_name.strip())
     
     if not FOOD_API_KEY or FOOD_API_KEY == "your_api_key_here":
-        st.sidebar.error("식약처 API 키가 설정되지 않았습니다.")
+        st.sidebar.error("API 키가 설정되지 않았습니다.")
         return None
 
-    service_id = "I2790"
-    # 수동 인코딩(urllib.parse)을 완전히 제거하여 한글 깨짐 방지
-    url = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{service_id}/json/1/50/DESC_KOR={search_name}"
+    encoded_name = urllib.parse.quote(search_name)
+    
+    # 공공데이터포털 전용 엔드포인트 적용 (파이썬 requests의 자동 인코딩 훼손을 막기 위해 URL 하드코딩 결합)
+    url = f"http://apis.data.go.kr/1471000/FoodNtrCpntDbInfo02/getFoodNtrCpntDbInq02?ServiceKey={FOOD_API_KEY}&pageNo=1&numOfRows=50&type=json&DESC_KOR={encoded_name}"
     
     try:
         response = requests.get(url, timeout=15)
         res_text = response.text.strip()
         
-        # 정상 JSON이 아닐 경우(XML 등), 에러 원문을 사이드바에 출력하여 디버깅
-        if not res_text.startswith('{'):
-            error_preview = res_text[:150].replace('<', '&lt;').replace('>', '&gt;')
-            st.sidebar.error(f"식약처 서버 거부 ({search_name}): API 키 오류 또는 트래픽 제한일 수 있습니다. (응답: {error_preview})")
+        # 에러 발생 시 XML로 반환되는 경우 방어
+        if res_text.startswith('<'):
+            st.sidebar.error(f"공공데이터포털 API 거부 ({search_name}): 인증키가 유효하지 않거나 트래픽이 초과되었습니다.")
             return None
             
         res_json = json.loads(res_text)
         
-        if 'RESULT' in res_json and res_json['RESULT'].get('CODE') != 'INFO-000':
-            st.sidebar.error(f"식약처 API 오류 ({search_name}): {res_json['RESULT'].get('MSG')}")
+        # 공공데이터포털 JSON 규격 검증 (response -> header -> resultCode)
+        header = res_json.get('response', {}).get('header', {})
+        if header.get('resultCode') != '00':
+            st.sidebar.error(f"공공데이터포털 API 오류 ({search_name}): {header.get('resultMsg')}")
             return None
             
-        if service_id in res_json and 'row' in res_json[service_id]:
-            return res_json[service_id]['row']
+        # 공공데이터포털 JSON 데이터 파싱 (response -> body -> items)
+        items = res_json.get('response', {}).get('body', {}).get('items', [])
+        
+        # items가 dict 형태로 {'item': [...]} 인 경우 (API 버전에 따른 예외 처리)
+        if isinstance(items, dict) and 'item' in items:
+            items = items['item']
+            
+        if items:
+            return items
             
     except Exception as e: 
         st.sidebar.error(f"통신 에러 ({search_name}): 서버 연결 실패 ({e})")
@@ -261,7 +270,7 @@ else:
             else:
                 st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (비교 대조표 렌더링 포함)..."):
+        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (공공데이터포털 JSON 파싱 적용)..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
