@@ -55,59 +55,35 @@ def load_guideline_knowledge():
         except Exception: pass
     return knowledge_text, None
 
-# 3-2. 공공데이터포털 영양성분 DB 호출 함수
+# 3-2. 공공데이터포털 영양성분 DB 호출 함수 (FoodNtrCpntDbInfo02 고정)
 def query_food_nutrient_db(food_name):
     if not food_name: return None
-    
-    std_dict = {
-        "쇠고기": "소고기",
-        "계육": "닭고기",
-        "돈육": "돼지고기"
-    }
+    std_dict = {"쇠고기": "소고기", "계육": "닭고기", "돈육": "돼지고기"}
     search_name = std_dict.get(food_name.strip(), food_name.strip())
     
-    if not FOOD_API_KEY or FOOD_API_KEY == "your_api_key_here":
-        st.sidebar.error("API 키가 설정되지 않았습니다.")
-        return None
+    if not FOOD_API_KEY or FOOD_API_KEY == "your_api_key_here": return None
 
     encoded_name = urllib.parse.quote(search_name)
-    url = f"http://apis.data.go.kr/1471000/FoodNtrIrdntInfoService1/getFoodNtrItdntList1?ServiceKey={FOOD_API_KEY}&desc_kor={encoded_name}&pageNo=1&numOfRows=200&type=json"
+    url = f"http://apis.data.go.kr/1471000/FoodNtrCpntDbInfo02/getFoodNtrCpntDbInq02?serviceKey={FOOD_API_KEY}&pageNo=1&numOfRows=200&type=json&DESC_KOR={encoded_name}"
     
     try:
         response = requests.get(url, timeout=15)
         res_text = response.text.strip()
-        
-        if not res_text or res_text.startswith('<'):
-            return None
-            
+        if not res_text or res_text.startswith('<'): return None
         res_json = json.loads(res_text)
         
-        if 'cmmMsgHeader' in res_json or 'OpenAPI_ServiceResponse' in res_json:
-            return None
-        
-        header = res_json.get('header') or res_json.get('response', {}).get('header', {})
-        if header.get('resultCode') and header.get('resultCode') != '00':
-            return None
-            
         body = res_json.get('body') or res_json.get('response', {}).get('body', {})
+        header = res_json.get('header') or res_json.get('response', {}).get('header', {})
+        if header.get('resultCode') and header.get('resultCode') != '00': return None
+            
         items = body.get('items', [])
-        
-        if not items:
-            return []
-            
-        if isinstance(items, dict) and 'item' in items:
-            return items['item']
-        elif isinstance(items, list):
-            return items
-        else:
-            return [items]
-            
-    except Exception: 
-        pass
-        
-    return None
+        if not items: return []
+        if isinstance(items, dict) and 'item' in items: return items['item']
+        elif isinstance(items, list): return items
+        else: return [items]
+    except Exception: return None
 
-# 4-1. Auto Pre-Scan
+# 4-1. Auto Pre-Scan [해결책 A: 출처표시형 트리거 분리 추가]
 def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel('gemini-2.5-flash')
     payload = []
@@ -117,14 +93,14 @@ def auto_extract_db_keywords_json(main_images):
         payload.append(img)
     prompt = """
     당신은 식품 상세페이지에서 외부 영양성분 DB 대조에 필요한 '검색어'와 '세부 조건'을 추출하는 AI입니다.
-    이미지를 훑어보고 타 식품과 수치를 비교하는 인포그래픽이 있다면 JSON 객체를 출력하십시오.
+    아래 두 가지 케이스 중 하나라도 해당하면 대분류 명사를 key로, 세부 조건을 value로 하는 JSON 객체를 출력하십시오.
     
-    [핵심 룰]
-    API 검색용 '대분류 명사(Key)'는 무조건 띄어쓰기가 없는 단일 명사(예: 소고기, 닭고기, 대두)로만 작성하십시오.
-    세부 수식어(Value) 항목에 시안에 적힌 괄호 안 글씨를 모두 적으십시오.
+    [케이스 1] 타 식품과 수치를 비교하는 인포그래픽 (비교광고)
+    [케이스 2] 제품 자체의 영양정보표 근처에 "자료출처: 식품의약품안전처", "식품영양성분DB 기준" 등 공식 DB를 인용하는 문구가 있고, 그 옆에 구체적인 영양성분 수치가 표기된 경우
     
-    [예시] {"소고기": "한우, 등심 구운것", "닭고기": "구운것", "대두": "노란콩 말린것"}
-    비교 자료가 없다면 오직 "NONE" 이라고만 출력하십시오.
+    [핵심 룰] API 검색용 '대분류 명사(Key)'는 무조건 띄어쓰기가 없는 단일 명사(예: 소고기, 대두, 우유)로 작성하십시오.
+    [예시] {"소고기": "한우, 등심 구운것", "우유": "일반우유 100ml 기준"}
+    해당 케이스가 전혀 없다면 오직 "NONE" 이라고만 출력하십시오.
     """
     payload.append(prompt)
     try:
@@ -136,7 +112,7 @@ def auto_extract_db_keywords_json(main_images):
         return json.loads(res_text)
     except Exception: return {}
 
-# 4-2. 실시간 AI 비전 분석 로직 [유의어 매칭 방어막 추가]
+# 4-2. 실시간 AI 비전 분석 로직 [해결책 C: 범용 룰 및 출처표시형 대조 강제]
 def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     current_date_str = datetime.now().strftime("%Y년 %m월 %d일")
@@ -156,10 +132,9 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
         for ref in ref_files:
             try: content_payload.append(Image.open(ref))
             except: pass 
-    master_fact_count = 0
     if master_fact_files:
         for fact in master_fact_files:
-            try: content_payload.append(Image.open(fact)); master_fact_count += 1
+            try: content_payload.append(Image.open(fact))
             except: pass
                 
     prompt = f"""
@@ -173,26 +148,26 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
     
     [필수 강제 체크리스트 - 스킵 절대 금지]
     
-    🚨 0. [인덱스 시야 격리 원칙]: 
-       - 각 인덱스의 분석 결과를 작성할 때, 반드시 해당 인덱스 이미지 안에 직접 보이는 팩트 기반으로만 분석하십시오.
+    🚨 0. [인덱스 시야 격리 & 과잉 교정 차단]: 각 인덱스 이미지 안의 팩트만 분석하십시오. 맛, 향, 감성, 기호성을 표현하는 일반적인 마케팅 형용사는 과대광고가 아니므로 무조건 정상 처리하십시오.
 
-    🌟 1. 마케팅 수사(Puffery) 주의 환기:
-       - 주관적/감성적 마케팅 문구만 있을 경우 "수정 권고"로 띄우고 과대광고 소지 검토를 요망하십시오.
+    🔥 1. [간접 비방 금지]: 합법적 첨가물이나 원재료를 '무첨가'했다고 지나치게 강조하여 타사 제품을 간접적으로 비방하거나 다르게 인식시키는 표현은 "치명적 위반(부당광고)"으로 적발하십시오.
 
-    🔥 2. DB 비교 수치 검증 (유의어 매칭 룰 적용) 및 표 생성 강제:
-       - 시안에 '구운것', '말린것'이라 적혀있어도 DB에는 '구이', '건조'로 등록되어 있을 수 있습니다. 토씨 하나까지 똑같지 않더라도 **의미상 동일한 조리법/부위의 데이터**를 찾아 수치를 대조하십시오.
-       - 타 식품 수치 비교 그래프가 존재하면, DB 수치를 대조하여 무조건 마크다운 표(Table)를 생성하십시오.
-       - DB에 의미상 부합하는 원물이 도저히 없으면 표 안에 '검색 결과 내 일치 원물 없음'이라고 명시하십시오.
+    🔥 2. [원래 없는 성분 기만]: 식물성 원료의 콜레스테롤 제로 등, 식품군 특성상 원래 존재하지 않는 성분을 마치 자사의 특별한 기술로 뺀 것처럼 강조하면 "치명적 위반"으로 적발하십시오.
 
-    🔥 3. 당류 법적 용어 엄격 구분:
-       - 영양정보표 당류가 0.5g 이상이라면 'ZERO' 표기를 금지하고 '설탕 무첨가/무가당'으로 수정 권고하십시오.
+    🔥 3. [부당 비교 금지]: 객관적 근거 없이 경쟁 카테고리를 부정적으로 묘사하여 소비자를 오인시키는 부당 비교 행위를 지적하십시오.
 
-    🔥 4. 제조공정도 배합 기만 방어 및 [모든 콩류 원산지 100% 국산 대조 룰]:
-       - 시안에 특정 하위 원료만을 단독 사용한 것처럼 묘사했다면 기만으로 적발하십시오.
-       - 시안에서 '국산콩'을 강조했을 경우, [팩시안] 원재료명을 샅샅이 뒤져 제품에 들어간 '모든 콩류(대두, 약콩 등)'의 원산지가 예외 없이 100% '국산'인지 교차 검증하십시오. 수입산이 있다면 "치명적 위반"으로 적발하십시오.
+    🔥 4. [영양강조표시 수학적 검증]: 시안에 영양성분이 '풍부(Rich/High)'하다고 표기되었을 경우 1일 기준치의 20% 이상, '함유(Source)'는 10% 이상인지 수치적으로 역산하여 검증하십시오. 기준 미달 시 수정 권고하십시오.
 
-    🔥 5. 포장재질 법적 표준 명칭 규격화:
-       - 포장재 명칭이 '멸균종이팩'으로 기재되어 있다면 '멸균팩'으로 수정하도록 "수정 권고" 조치하십시오.
+    🔥 5. [DB 비교/출처 1:1 대조 및 4열 표 생성 절대 강제]:
+       - [비교광고형] 타 식품 비교 시, 수치 환산(예: 특정 단백질 함량을 맞추기 위한 질량 비례식)이 수학적으로 정확한지 소수점까지 검증하고 표를 생성하십시오.
+       - [자체출처형] 제품 영양정보표 등에 식약처 DB를 출처로 명시했다면, 제공된 DB 데이터와 열량/단백질/지방/당류 등 모든 성분을 1:1로 대조하십시오. 기준량(100g vs 1회 제공량)이 다르면 반드시 환산하여 비교하십시오.
+       - **[절대 경고] 위 두 케이스 발생 시 반드시 [비교 항목 | 시안 표기 수치 | 식약처 DB 실제 수치 | 일치 여부] 4칸으로 구성된 마크다운 표를 생성하십시오. 누락 시 오류로 간주합니다.**
+
+    🔥 6. [원물 은폐 기만 방어 (팩시안 교차 대조)]: 메인 원물로 강조된 재료가 팩시안 원재료명에서 극소량에 불과하고 실제 주원료를 은폐했다면 "치명적 위반"입니다. 시안에 강조된 모든 국산 농산물은 원재료명 원산지와 100% 일치해야 합니다.
+
+    🔥 7. 당류 오인 방지 및 포장재 명칭 규격화:
+       - '설탕 무첨가' 표기 시 당류 0.5g 이상이면 무당 오인 방지 멘트 병기를 권고하십시오.
+       - 포장재 명칭이 '멸균종이팩'이면 '멸균팩'으로 수정 조치하십시오.
     
     반드시 아래의 JSON 배열(Array) 형식으로만 응답하십시오.
     [
@@ -201,8 +176,8 @@ def analyze_design_with_ai(main_images, ref_files, master_fact_files, legal_text
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
         "title": "검토 항목 요약",
         "marketing_text": "상세페이지 추출 원문",
-        "fact_or_legal_ground": "팩시안, 식약처 DB 매칭 항목, 또는 법적 잣대",
-        "discrepancy_analysis": "위반 분석 및 조치 사항"
+        "fact_or_legal_ground": "팩시안, 식약처 DB, 또는 QC 룰",
+        "discrepancy_analysis": "위반 분석 및 조치 사항 (DB 대조 시 4칸 표 필수 삽입)"
       }}
     ]
     * 위반사항이나 표를 그릴 내용이 없다면 risk_level "정상" 객체를 반환하십시오.
@@ -225,7 +200,7 @@ st.sidebar.markdown("### 📥 심사 대상 파일 등록")
 uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 시안 (다중 업로드)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔍 식약처 영양성분 DB 실시간 자동 연동 (비교광고 검증용)")
+st.sidebar.markdown("### 🔍 식약처 영양성분 DB 실시간 자동 연동 (비교광고/출처 검증용)")
 db_search_keyword = st.sidebar.text_input("상세페이지 내 비교 대상 식품명 입력", help="비워두면 AI가 자동으로 탐지합니다.")
 
 st.sidebar.markdown("---")
@@ -236,7 +211,7 @@ uploaded_spec = st.sidebar.file_uploader("2️⃣ 원료 한글라벨/스펙", t
 uploaded_recipe = st.sidebar.file_uploader("3️⃣ 배합비/레시피 데이터", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
 st.sidebar.markdown("---")
-trigger_api = st.sidebar.button("⚙️ 3-Pass 투트랙 + 식약처 DB 자동 정밀 심사", use_container_width=True)
+trigger_api = st.sidebar.button("⚙️ 3-Pass 투트랙 + 범용 룰 자동 정밀 심사", use_container_width=True)
 
 # ==========================================
 # 최상단
@@ -262,28 +237,47 @@ else:
     else:
         final_db_context_text = "" 
         
-        with st.spinner("🔍 1단계: 시안 내 식약처 DB 타겟을 자동 추출하고 있습니다..."):
+        with st.spinner("🔍 1단계: 시안 내 식약처 DB 타겟(비교/출처)을 전면 탐지 중입니다..."):
             auto_dict = auto_extract_db_keywords_json(main_img_objs)
             if auto_dict:
+                # [해결책 B: 단백질 외 전체 핵심 영양소 파싱 및 기준량 포함 로직 적용]
+                NUTR_FIELDS = {
+                    'NUTR_CONT1': ('열량', 'kcal'),
+                    'NUTR_CONT2': ('탄수화물', 'g'),
+                    'NUTR_CONT3': ('단백질', 'g'),
+                    'NUTR_CONT4': ('지방', 'g'),
+                    'NUTR_CONT5': ('당류', 'g'),
+                    'NUTR_CONT6': ('나트륨', 'mg'),
+                    'NUTR_CONT7': ('콜레스테롤', 'mg'),
+                    'NUTR_CONT8': ('포화지방', 'g'),
+                    'NUTR_CONT9': ('트랜스지방', 'g')
+                }
+                
                 for base_food, detail_cond in auto_dict.items():
                     st.sidebar.success(f"🤖 탐지 완료: [{base_food}] ➔ 타겟 조건: {detail_cond}")
                     db_data = query_food_nutrient_db(base_food)
                     
-                    # [데이터 다이어트 로직 적용] 불필요한 비타민/미네랄 JSON 데이터를 날리고 텍스트 1줄로 압축
                     if db_data:
                         simplified_db = []
                         for row in db_data[:200]:
                             name = row.get('DESC_KOR', '이름없음')
-                            protein = row.get('NUTR_CONT3', 'N/A')
-                            if protein != 'N/A':
-                                simplified_db.append(f"- 명칭: [{name}] | 단백질 함량: {protein}g")
+                            basis = row.get('SERVING_SIZE', '100g') # 보통 공공데이터는 100g 기준이나 필드 확인용
+                            
+                            parts = []
+                            for field, (label, unit) in NUTR_FIELDS.items():
+                                val = row.get(field)
+                                if val and val != 'N/A' and val != '0.00':
+                                    parts.append(f"{label} {val}{unit}")
+                            
+                            if parts:
+                                simplified_db.append(f"- [{name}] (기준량: {basis}) " + ", ".join(parts))
                         
-                        final_db_context_text += f"\n[검색어 '{base_food}' (타겟 조건: {detail_cond}) DB 요약 데이터]\n" + "\n".join(simplified_db) + "\n"
-                        st.sidebar.info(f"✅ 식약처 DB '{base_food}' 핵심 데이터 추출 완료")
+                        final_db_context_text += f"\n[검색어 '{base_food}' (조건: {detail_cond}) DB 요약]\n" + "\n".join(simplified_db) + "\n"
+                        st.sidebar.info(f"✅ 식약처 DB '{base_food}' 전 영양소 파싱 완료")
             else:
-                st.sidebar.info("🔍 탐지된 비교광고 외부 DB 키워드 없음")
+                st.sidebar.info("🔍 탐지된 외부 DB 인용 또는 비교 키워드 없음")
 
-        with st.spinner("⚙️ 2단계: 3-Pass 투트랙 정밀 심사 가동 중 (데이터 다이어트 및 유의어 매칭 적용)..."):
+        with st.spinner("⚙️ 2단계: 선임자급 범용 룰 정밀 심사 가동 중..."):
             try:
                 ref_files = []
                 if uploaded_test: ref_files.extend(uploaded_test)
