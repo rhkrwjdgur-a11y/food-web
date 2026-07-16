@@ -41,6 +41,9 @@ try:
     gcp_json_string = st.secrets["gcp_service_account"]["GOOGLE_VISION_KEY"]
     gcp_credentials = json.loads(gcp_json_string) # 문자열을 딕셔너리로 변환
     
+    # 🌟 핵심 해결책: private_key의 이스케이프 문자를 실제 줄바꿈으로 강제 변환
+    gcp_credentials["private_key"] = gcp_credentials["private_key"].replace('\\n', '\n')
+    
     vision_credentials = service_account.Credentials.from_service_account_info(gcp_credentials)
     vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
 
