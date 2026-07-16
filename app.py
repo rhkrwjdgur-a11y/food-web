@@ -30,6 +30,8 @@ st.markdown("""
 # ==========================================
 # 2. 3대 핵심 API 키 연동 (Secrets)
 # ==========================================
+import textwrap # 암호키 재조립용 기본 라이브러리 추가
+
 try:
     # 1) 제미나이 API 연동
     genai.configure(api_key=st.secrets["AI_VISION_API_KEY"])
@@ -39,10 +41,22 @@ try:
     
     # 3) 구글 클라우드 비전 API 연동 (통째로 넣은 JSON 문자열을 파싱)
     gcp_json_string = st.secrets["gcp_service_account"]["GOOGLE_VISION_KEY"]
-    gcp_credentials = json.loads(gcp_json_string) # 문자열을 딕셔너리로 변환
+    gcp_credentials = json.loads(gcp_json_string) 
     
-    # 🌟 핵심 해결책: private_key의 이스케이프 문자를 실제 줄바꿈으로 강제 변환
-    gcp_credentials["private_key"] = gcp_credentials["private_key"].replace('\\n', '\n')
+    # 🌟 핵심 해결책: 망가진 Private Key 형식을 강제로 해체 후 완벽한 규격으로 재조립 (Bulletproof Rebuild)
+    raw_key = gcp_credentials.get("private_key", "")
+    header = "-----BEGIN PRIVATE KEY-----"
+    footer = "-----END PRIVATE KEY-----"
+    
+    if header in raw_key and footer in raw_key:
+        # 헤더와 푸터 사이의 본문만 추출
+        body = raw_key.split(header)[1].split(footer)[0]
+        # 잘못 들어간 모든 줄바꿈, 띄어쓰기, 역슬래시 강제 제거
+        clean_body = body.replace('\\n', '').replace('\n', '').replace(' ', '')
+        # 구글 서버가 요구하는 정확한 64자 단위 줄바꿈으로 재포장
+        wrapped_body = '\n'.join(textwrap.wrap(clean_body, 64))
+        # 헤더와 푸터를 다시 붙여서 완성
+        gcp_credentials["private_key"] = f"{header}\n{wrapped_body}\n{footer}\n"
     
     vision_credentials = service_account.Credentials.from_service_account_info(gcp_credentials)
     vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
