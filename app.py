@@ -30,33 +30,13 @@ st.markdown("""
 # ==========================================
 # 2. 3대 핵심 API 키 연동 (Secrets)
 # ==========================================
-import textwrap # 암호키 재조립용 기본 라이브러리 추가
-
 try:
-    # 1) 제미나이 API 연동
     genai.configure(api_key=st.secrets["AI_VISION_API_KEY"])
-    
-    # 2) 식약처 DB API 키
     FOOD_API_KEY = st.secrets["FOOD_SAFETY_API_KEY"]
     
-    # 3) 구글 클라우드 비전 API 연동 (통째로 넣은 JSON 문자열을 파싱)
-    gcp_json_string = st.secrets["gcp_service_account"]["GOOGLE_VISION_KEY"]
-    gcp_credentials = json.loads(gcp_json_string) 
-    
-    # 🌟 핵심 해결책: 망가진 Private Key 형식을 강제로 해체 후 완벽한 규격으로 재조립 (Bulletproof Rebuild)
-    raw_key = gcp_credentials.get("private_key", "")
-    header = "-----BEGIN PRIVATE KEY-----"
-    footer = "-----END PRIVATE KEY-----"
-    
-    if header in raw_key and footer in raw_key:
-        # 헤더와 푸터 사이의 본문만 추출
-        body = raw_key.split(header)[1].split(footer)[0]
-        # 잘못 들어간 모든 줄바꿈, 띄어쓰기, 역슬래시 강제 제거
-        clean_body = body.replace('\\n', '').replace('\n', '').replace(' ', '')
-        # 구글 서버가 요구하는 정확한 64자 단위 줄바꿈으로 재포장
-        wrapped_body = '\n'.join(textwrap.wrap(clean_body, 64))
-        # 헤더와 푸터를 다시 붙여서 완성
-        gcp_credentials["private_key"] = f"{header}\n{wrapped_body}\n{footer}\n"
+    gcp_credentials = dict(st.secrets["gcp_service_account"])
+    # TOML 파싱 중 '\n' 이스케이프 방지 및 순정 줄바꿈 복구
+    gcp_credentials["private_key"] = gcp_credentials["private_key"].replace("\\n", "\n")
     
     vision_credentials = service_account.Credentials.from_service_account_info(gcp_credentials)
     vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
@@ -64,12 +44,12 @@ try:
 except KeyError as e:
     st.error(f"시스템 오류: Secrets 설정 누락 - {e}")
     st.stop()
-except json.JSONDecodeError as e:
-    st.error(f"시스템 오류: 구글 비전 JSON 키 형식이 잘못되었습니다. - {e}")
+except Exception as e:
+    st.error(f"구글 비전 인증 오류: {e}")
     st.stop()
 
 # ==========================================
-# 3. 보조 함수 (법령 가이드라인, 식약처 DB 조회)
+# 3. 보조 함수 (가이드라인, 식약처 DB 조회)
 # ==========================================
 @st.cache_data
 def load_guideline_knowledge():
@@ -120,7 +100,6 @@ def extract_text_with_google_vision(uploaded_files):
     for file in uploaded_files:
         content = file.read()
         image = vision.Image(content=content)
-        # 영수증, 라벨 등 밀집 텍스트 판독 모드
         response = vision_client.document_text_detection(image=image)
         
         if response.error.message:
@@ -135,7 +114,7 @@ def extract_text_with_google_vision(uploaded_files):
     return extracted_text
 
 def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
-    """제2 에이전트: 제미나이 LLM으로 법적 논리 검증"""
+    """제2 에이전트: 제미나이 LLM으로 1대1 팩트 교차 검증"""
     model = genai.GenerativeModel('gemini-2.5-flash')
     content_payload = []
     chunk_list = []
@@ -146,9 +125,9 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         content_payload.extend([f"--- [시안 구간 인덱스: {idx}] ---", img_obj])
                 
     prompt = f"""
-    당신은 엄격한 품질관리(QC) 전문가(판사)입니다. 당신의 시각적 판단을 믿지 말고, 구글 비전 API가 추출해 준 [확정된 팩트 텍스트]만을 100% 신뢰하여 판결하십시오.
+    당신은 엄격하고 기계적인 품질관리(QC) 검수자입니다. 당신의 가장 중요한 임무는 '마케팅 시안 이미지'에 표기된 모든 수치, 텍스트가 구글 비전 API가 추출해 준 [확정된 팩시안 원시 데이터]와 1대1로 완벽하게 일치하는지 '글자 단위로 교차 검증'하는 것입니다.
     
-    [Google Vision API가 100% 완벽하게 필사한 팩시안(후면라벨) 원시 데이터]
+    [Google Vision API가 100% 완벽하게 필사한 팩시안(후면라벨) 원시 데이터 - 절대적 진리]
     {ocr_extracted_text}
     
     [요약된 국가 공인 영양성분 DB 데이터]
@@ -156,35 +135,31 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
     
     [필수 강제 체크리스트 - 스킵 절대 금지]
     
-    🚨 0. [연출 컷 주의문구]: 조리/연출 이미지 주변에 '연출된 이미지' 주의문구가 누락되었다면 지적하십시오.
+    🔥 1. [1대1 제품명 및 영양정보 대조 (가장 중요)]:
+       - 시안에 적힌 '제품명(예: 연세두유 고단백 검은콩)'이 팩시안의 정식 제품명(예: 연세두유 고단백 검은콩&고칼슘)과 토씨 하나라도 다르거나 누락된 단어가 있다면 "수정 권고"하십시오.
+       - 시안의 '영양정보' 표기(열량, 당류, 콜레스테롤, 트랜스지방 등)를 팩시안과 단위(g/mg), 수치, 비율(%)까지 1대1로 대조하십시오. (예: 시안 '당류 1g 1%' vs 팩시안 '당류 4g 4%' / 시안 '콜레스테롤 0mg 33%' vs 팩시안 '0mg 0%' / 시안 '트랜스지방 0mg' vs 팩시안 '0g'). 단 하나라도 다르면 "치명적 위반(오기재)"으로 적발하십시오.
 
-    🔥 1. [디자이너 오타 색출 및 알레르기 논리 모순]: (가장 중요)
-       - 위 [Google Vision API 텍스트]를 보십시오. 영양정보표에서 함량이 '0mg'인데 1일 영양성분 기준치 비율이 '0%'가 아니거나(예: 콜레스테롤 0mg 33%), 트랜스지방 단위가 g이 아닌 mg라면 "치명적 위반(디자이너 오타)"으로 무조건 적발하십시오.
-       - 알레르기 주의문구에 제품의 주원료(예: 잣, 아몬드 등)가 교차오염 우려 물질로 중복 기재되어 있다면 논리 모순으로 적발하십시오.
+    🔥 2. [알레르기 주의문구 1대1 검증 및 논리 모순]:
+       - 시안의 알레르기 주의문구를 팩시안의 주의문구와 1대1로 대조하여 없는 원료(예: 땅콩)가 들어갔거나 누락되었는지 확인하십시오.
+       - 특히 제품의 주원료(예: 잣, 아몬드 등)가 주의문구(교차오염 우려)에 중복으로 기재되어 있다면 논리 모순으로 적발하십시오.
 
-    🔥 2. [의무표시와 기만표시 구분]:
-       - 영양정보표 안의 '콜레스테롤 0mg' 표기는 합법적 의무이므로 문제 삼지 마십시오.
-       - 하지만 상세페이지 마케팅 문구에서 식물성 제품에 원래 없는 성분을 '콜레스테롤 NO' 등으로 기만 강조했다면 "치명적 위반"으로 적발하십시오.
+    🚨 3. [연출 컷 주의문구]: 잔에 따르는 모습 등 조리/연출 이미지 주변에 '연출된 이미지' 또는 '이미지 예' 주의문구가 누락되었다면 지적하십시오.
 
-    🔥 3. [부당 비교 금지 면책 무시]: 동물성 단백질 등 경쟁 카테고리를 깎아내리는 부당 비교는 면책 문구가 있어도 "수정 권고"하십시오.
+    🔥 4. [기능성 명칭 1대1 검증]: 비타민 등 영양소 기능성 설명 시 식약처 공전 워딩(예: 비타민E '항산화작용을 하여 유해산소로부터 세포를 보호')과 1대1로 대조하여 '항산화작용을 하여' 등이 누락되었다면 정확히 수정 권고하십시오.
 
-    🔥 4. [영양강조표시 및 식약처 공식 기능성 명칭 검증]: 
-       - 비타민 등 영양소 기능성 설명 시 식약처 공전 워딩(예: 비타민E '항산화작용을 하여 유해산소로부터 세포를 보호')이 토씨 하나라도 틀리거나 누락되었다면 정확히 대조하여 수정 권고하십시오.
+    🔥 5. [의무표시와 기만표시 구분]: 영양정보표 내 '콜레스테롤 0mg' 표기는 합법입니다. 마케팅 카피에서 '콜레스테롤 NO' 등을 강조했다면 기만으로 적발하십시오.
 
-    🔥 5. [출처 엄격 분리]: '식약처' 출처가 명시된 구간에서만 [비교 항목 | 시안 표기 수치 | 식약처 DB 실제 수치 | 일치 여부] 표를 생성하십시오.
-
-    🔥 6. [원물 은폐 기만]: 
-       - 위 [Google Vision API 텍스트]의 원재료명을 확인하십시오. 시안 카피에서 크게 강조한 농산물(예: 검은콩, 잣 등)이 원재료 배합비율상 1% 미만의 극소량(예: 0.21%, 0.333% 등)이라면 주원료 기만으로 "치명적 위반"을 때리십시오.
+    🔥 6. [원물 은폐 기만]: 시안에서 강조한 농산물(검은콩, 아몬드, 잣 등)이 팩시안 배합비율상 1% 미만의 극소량(예: 0.21%, 0.333% 등)이면 주원료 기만으로 "치명적 위반" 적발하십시오.
     
-    반드시 JSON 배열 형식으로 응답하십시오.
+    반드시 JSON 배열 형식으로 응답하십시오. 분석을 수행할 때, discrepancy_analysis 항목 내에 무조건 "1대1 대조 결과: [시안 표기] vs [팩시안 표기]" 문장을 포함하여 양쪽 데이터를 철저히 비교했음을 증명하십시오.
     [
       {{
         "image_index": 구간 인덱스 번호,
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
         "title": "검토 항목 요약",
-        "marketing_text": "상세페이지 마케팅 원문",
-        "fact_or_legal_ground": "Google Vision API가 추출한 텍스트 팩트 또는 식약처 룰",
-        "discrepancy_analysis": "위반 분석 및 조치 사항 (구체적인 숫자와 텍스트 명시)"
+        "marketing_text": "상세페이지 마케팅/영양 표기 원문",
+        "fact_or_legal_ground": "대조한 Google Vision API 팩트 또는 식약처 규정",
+        "discrepancy_analysis": "1대1 대조 결과: (시안 내용 vs 팩시안 내용) / 위반 분석 및 조치 사항"
       }}
     ]
     """
@@ -206,9 +181,9 @@ uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 
 st.sidebar.markdown("---")
 uploaded_master_fact = st.sidebar.file_uploader("4️⃣ 확정 표시사항 기준안 (최종 팩시안)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 st.sidebar.markdown("---")
-trigger_api = st.sidebar.button("⚙️ Vision API + LLM 하이브리드 정밀 심사", use_container_width=True)
+trigger_api = st.sidebar.button("⚙️ 1대1 교차 검증 (Vision API + LLM)", use_container_width=True)
 
-st.title("🛡️ 식품 표시·광고 정밀 통제 시스템 (Hybrid Ver.)")
+st.title("🛡️ 식품 표시·광고 정밀 통제 시스템 (Cross-check Ver.)")
 st.markdown("---")
 
 if not uploaded_main_images:
@@ -218,11 +193,11 @@ else:
     if not trigger_api:
         for img in main_img_objs: st.image(img, use_container_width=True)
     else:
-        # [Step 1] Google Cloud Vision API 텍스트 추출 (눈)
+        # [Step 1] Google Cloud Vision API 텍스트 추출
         with st.spinner("👁️ [제1 에이전트] 구글 비전 API가 팩시안을 픽셀 단위로 해독 중입니다..."):
             vision_extracted_text = extract_text_with_google_vision(uploaded_master_fact)
             st.success("✅ 구글 비전 API 판독 완료")
-            with st.expander("🔍 구글 비전 API 추출 날것(Raw Text) 팩트 확인 (클릭하여 텍스트 대조)"):
+            with st.expander("🔍 구글 비전 API 추출 날것(Raw Text) 팩트 확인"):
                 st.text(vision_extracted_text)
 
         # [Step 2] 식약처 DB 연동
@@ -236,8 +211,8 @@ else:
                         simplified_db = [f"- [{row.get('DESC_KOR', '이름없음')}] 열량:{row.get('NUTR_CONT1')}kcal, 단백질:{row.get('NUTR_CONT3')}g, 지방:{row.get('NUTR_CONT4')}g" for row in db_data[:20]]
                         final_db_context_text += f"\n[검색어 '{base_food}'] DB 요약\n" + "\n".join(simplified_db) + "\n"
 
-        # [Step 3] 제미나이 LLM 분석 (뇌)
-        with st.spinner("⚖️ [제2 에이전트] 제미나이가 비전 API 데이터를 바탕으로 법적 판결을 내리는 중입니다..."):
+        # [Step 3] 제미나이 LLM 1:1 대조 분석
+        with st.spinner("⚖️ [제2 에이전트] 제미나이가 팩시안과 시안을 1:1로 정밀 교차 검증 중입니다..."):
             try:
                 json_result, chunk_list = analyze_design_with_ai(main_img_objs, vision_extracted_text, final_db_context_text)
                 report_data = json.loads(json_result)
@@ -249,7 +224,7 @@ else:
                     with row_col2:
                         issues = [r for r in report_data if r.get("image_index") == idx]
                         if not issues: 
-                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>해당 구간 범용 법적 테두리 및 팩트 확인 완료.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>1대1 교차 검증 및 법적 테두리 확인 완료.</div>', unsafe_allow_html=True)
                         else:
                             for issue in issues:
                                 risk = issue.get("risk_level", "정상")
