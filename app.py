@@ -9,7 +9,6 @@ import json
 import time
 import requests
 import urllib.parse
-from datetime import datetime
 import re
 
 # ==========================================
@@ -20,9 +19,9 @@ st.set_page_config(page_title="식품 표시사항 정밀 검토 시스템", lay
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
-    .risk-critical { background-color: #fdf2f2; padding: 20px; border-radius: 10px; border-left: 6px solid #dc3545; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .risk-warning { background-color: #fefaf0; padding: 20px; border-radius: 10px; border-left: 6px solid #f39c12; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .risk-pass { background-color: #f4fbf7; padding: 20px; border-radius: 10px; border-left: 6px solid #2ecc71; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-critical { background-color: #fdf2f2; padding: 20px; border-radius: 10px; border-left: 6px solid #dc3545; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-warning { background-color: #fefaf0; padding: 20px; border-radius: 10px; border-left: 6px solid #f39c12; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .risk-pass { background-color: #f4fbf7; padding: 20px; border-radius: 10px; border-left: 6px solid #2ecc71; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     .card-title { font-size: 18px; font-weight: bold; color: #2c3e50; margin-bottom: 15px; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
     .section-title { font-size: 20px; font-weight: bold; color: #1a252f; border-bottom: 2px solid #34495e; padding-bottom: 8px; margin-top: 10px; margin-bottom: 15px; }
     </style>
@@ -38,13 +37,18 @@ try:
     # 2) 식약처 DB API 키
     FOOD_API_KEY = st.secrets["FOOD_SAFETY_API_KEY"]
     
-    # 3) 구글 클라우드 비전 API 연동 (서비스 계정)
-    gcp_credentials = dict(st.secrets["gcp_service_account"])
+    # 3) 구글 클라우드 비전 API 연동 (통째로 넣은 JSON 문자열을 파싱)
+    gcp_json_string = st.secrets["gcp_service_account"]["GOOGLE_VISION_KEY"]
+    gcp_credentials = json.loads(gcp_json_string) # 문자열을 딕셔너리로 변환
+    
     vision_credentials = service_account.Credentials.from_service_account_info(gcp_credentials)
     vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
 
 except KeyError as e:
     st.error(f"시스템 오류: Secrets 설정 누락 - {e}")
+    st.stop()
+except json.JSONDecodeError as e:
+    st.error(f"시스템 오류: 구글 비전 JSON 키 형식이 잘못되었습니다. - {e}")
     st.stop()
 
 # ==========================================
@@ -88,10 +92,10 @@ def auto_extract_db_keywords_json(main_images):
     except: return {}
 
 # ==========================================
-# 4. 투트랙 에이전트 시스템
+# 4. 투트랙 에이전트 시스템 (비전 API + LLM)
 # ==========================================
 def extract_text_with_google_vision(uploaded_files):
-    """제1 에이전트: 구글 비전 API로 팩시안 무결점 추출"""
+    """제1 에이전트: 구글 비전 API로 팩시안 밀집 텍스트 무결점 추출"""
     if not uploaded_files:
         return "팩시안 이미지 없음"
     
@@ -99,7 +103,7 @@ def extract_text_with_google_vision(uploaded_files):
     for file in uploaded_files:
         content = file.read()
         image = vision.Image(content=content)
-        # 밀집 텍스트(영수증/라벨) 판독 모드
+        # 영수증, 라벨 등 밀집 텍스트 판독 모드
         response = vision_client.document_text_detection(image=image)
         
         if response.error.message:
@@ -138,23 +142,22 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
     🚨 0. [연출 컷 주의문구]: 조리/연출 이미지 주변에 '연출된 이미지' 주의문구가 누락되었다면 지적하십시오.
 
     🔥 1. [디자이너 오타 색출 및 알레르기 논리 모순]: (가장 중요)
-       - 위 [Google Vision API 텍스트]를 보십시오. 영양정보에서 '0mg'인데 비율이 '0%'가 아니거나(예: 33%), 트랜스지방 단위가 g이 아닌 mg라면 "치명적 위반(디자이너 오타)"으로 무조건 적발하십시오.
+       - 위 [Google Vision API 텍스트]를 보십시오. 영양정보표에서 함량이 '0mg'인데 1일 영양성분 기준치 비율이 '0%'가 아니거나(예: 콜레스테롤 0mg 33%), 트랜스지방 단위가 g이 아닌 mg라면 "치명적 위반(디자이너 오타)"으로 무조건 적발하십시오.
        - 알레르기 주의문구에 제품의 주원료(예: 잣, 아몬드 등)가 교차오염 우려 물질로 중복 기재되어 있다면 논리 모순으로 적발하십시오.
 
     🔥 2. [의무표시와 기만표시 구분]:
-       - 영양정보표 안의 '콜레스테롤 0mg'은 합법이므로 무시하십시오.
-       - 마케팅 문구에서 식물성 제품에 원래 없는 성분을 '콜레스테롤 NO' 등으로 기만 강조했다면 "치명적 위반"입니다.
+       - 영양정보표 안의 '콜레스테롤 0mg' 표기는 합법적 의무이므로 문제 삼지 마십시오.
+       - 하지만 상세페이지 마케팅 문구에서 식물성 제품에 원래 없는 성분을 '콜레스테롤 NO' 등으로 기만 강조했다면 "치명적 위반"으로 적발하십시오.
 
     🔥 3. [부당 비교 금지 면책 무시]: 동물성 단백질 등 경쟁 카테고리를 깎아내리는 부당 비교는 면책 문구가 있어도 "수정 권고"하십시오.
 
     🔥 4. [영양강조표시 및 식약처 공식 기능성 명칭 검증]: 
-       - 영양성분 '풍부'는 1일 기준치의 20% 이상, '함유/고단백'은 10% 이상인지 확인하십시오.
-       - 비타민 등 영양소 기능성 설명 시 식약처 공전 워딩(예: 비타민E '항산화작용을 하여 유해산소로부터 세포를 보호')이 틀리거나 누락되었다면 정확히 수정 권고하십시오.
+       - 비타민 등 영양소 기능성 설명 시 식약처 공전 워딩(예: 비타민E '항산화작용을 하여 유해산소로부터 세포를 보호')이 토씨 하나라도 틀리거나 누락되었다면 정확히 대조하여 수정 권고하십시오.
 
     🔥 5. [출처 엄격 분리]: '식약처' 출처가 명시된 구간에서만 [비교 항목 | 시안 표기 수치 | 식약처 DB 실제 수치 | 일치 여부] 표를 생성하십시오.
 
     🔥 6. [원물 은폐 기만]: 
-       - 위 [Google Vision API 텍스트] 원재료명을 확인하십시오. 시안 카피에서 크게 강조한 농산물이 원재료 배합비율상 1% 미만의 극소량(예: 0.21%, 0.333% 등)이라면 주원료 기만으로 "치명적 위반"을 때리십시오.
+       - 위 [Google Vision API 텍스트]의 원재료명을 확인하십시오. 시안 카피에서 크게 강조한 농산물(예: 검은콩, 잣 등)이 원재료 배합비율상 1% 미만의 극소량(예: 0.21%, 0.333% 등)이라면 주원료 기만으로 "치명적 위반"을 때리십시오.
     
     반드시 JSON 배열 형식으로 응답하십시오.
     [
@@ -163,7 +166,7 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
         "title": "검토 항목 요약",
         "marketing_text": "상세페이지 마케팅 원문",
-        "fact_or_legal_ground": "Google Vision API가 추출한 텍스트 또는 식약처 룰",
+        "fact_or_legal_ground": "Google Vision API가 추출한 텍스트 팩트 또는 식약처 룰",
         "discrepancy_analysis": "위반 분석 및 조치 사항 (구체적인 숫자와 텍스트 명시)"
       }}
     ]
@@ -172,7 +175,8 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
     
     for attempt in range(3):
         try:
-            return model.generate_content(content_payload, generation_config=genai.types.GenerationConfig(temperature=0.0, response_mime_type="application/json")).text, chunk_list
+            response = model.generate_content(content_payload, generation_config=genai.types.GenerationConfig(temperature=0.0, response_mime_type="application/json"))
+            return response.text, chunk_list
         except Exception as e:
             if attempt < 2: time.sleep(10); continue
             raise e
@@ -197,12 +201,14 @@ else:
     if not trigger_api:
         for img in main_img_objs: st.image(img, use_container_width=True)
     else:
+        # [Step 1] Google Cloud Vision API 텍스트 추출 (눈)
         with st.spinner("👁️ [제1 에이전트] 구글 비전 API가 팩시안을 픽셀 단위로 해독 중입니다..."):
             vision_extracted_text = extract_text_with_google_vision(uploaded_master_fact)
             st.success("✅ 구글 비전 API 판독 완료")
-            with st.expander("🔍 구글 비전 API 추출 날것(Raw Text) 팩트 확인"):
+            with st.expander("🔍 구글 비전 API 추출 날것(Raw Text) 팩트 확인 (클릭하여 텍스트 대조)"):
                 st.text(vision_extracted_text)
 
+        # [Step 2] 식약처 DB 연동
         with st.spinner("🔍 [DB 연동] 외부 영양성분 DB 타겟 탐지 중..."):
             auto_dict = auto_extract_db_keywords_json(main_img_objs)
             final_db_context_text = ""
@@ -213,6 +219,7 @@ else:
                         simplified_db = [f"- [{row.get('DESC_KOR', '이름없음')}] 열량:{row.get('NUTR_CONT1')}kcal, 단백질:{row.get('NUTR_CONT3')}g, 지방:{row.get('NUTR_CONT4')}g" for row in db_data[:20]]
                         final_db_context_text += f"\n[검색어 '{base_food}'] DB 요약\n" + "\n".join(simplified_db) + "\n"
 
+        # [Step 3] 제미나이 LLM 분석 (뇌)
         with st.spinner("⚖️ [제2 에이전트] 제미나이가 비전 API 데이터를 바탕으로 법적 판결을 내리는 중입니다..."):
             try:
                 json_result, chunk_list = analyze_design_with_ai(main_img_objs, vision_extracted_text, final_db_context_text)
@@ -224,12 +231,21 @@ else:
                     with row_col1: st.image(chunk_img, use_container_width=True)
                     with row_col2:
                         issues = [r for r in report_data if r.get("image_index") == idx]
-                        if not issues: st.markdown('✅ 특이사항 없음')
+                        if not issues: 
+                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>해당 구간 범용 법적 테두리 및 팩트 확인 완료.</div>', unsafe_allow_html=True)
                         else:
                             for issue in issues:
                                 risk = issue.get("risk_level", "정상")
+                                css_class = "risk-critical" if risk == "치명적 위반" else "risk-warning" if risk == "수정 권고" else "risk-pass"
                                 icon = "❌" if risk == "치명적 위반" else "⚠️" if risk == "수정 권고" else "✅"
-                                st.markdown(f"**{icon} {issue.get('title', '')}**")
-                                st.markdown(f"- **마케팅 원문:** {issue.get('marketing_text', '')}\n- **QC 팩트 근거:** {issue.get('fact_or_legal_ground', '')}\n- **조치사항:** {issue.get('discrepancy_analysis', '')}")
+                                
+                                st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+                                st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
+                                st.markdown(f"""
+                                - **마케팅 원문:** {issue.get('marketing_text', '')}
+                                - **QC 팩트 근거:** {issue.get('fact_or_legal_ground', '')}
+                                - **조치사항:** {issue.get('discrepancy_analysis', '')}
+                                """)
+                                st.markdown('</div>', unsafe_allow_html=True)
                     st.markdown("---")
             except Exception as e: st.error(f"오류 발생: {e}")
