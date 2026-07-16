@@ -31,11 +31,17 @@ st.markdown("""
 # 2. 3대 핵심 API 키 연동 (Secrets)
 # ==========================================
 try:
+    # 1) 제미나이 API 연동
     genai.configure(api_key=st.secrets["AI_VISION_API_KEY"])
+    
+    # 2) 식약처 DB API 키 연동
     FOOD_API_KEY = st.secrets["FOOD_SAFETY_API_KEY"]
     
-    gcp_credentials = dict(st.secrets["gcp_service_account"])
-    # TOML 파싱 중 '\n' 이스케이프 방지 및 순정 줄바꿈 복구
+    # 3) 구글 클라우드 비전 API 연동 (JSON 문자열 파싱 방식)
+    gcp_json_string = st.secrets["gcp_service_account"]["GOOGLE_VISION_KEY"]
+    gcp_credentials = json.loads(gcp_json_string)
+    
+    # 파싱 과정에서 이스케이프된 줄바꿈 기호를 실제 줄바꿈 문자로 완벽히 복구
     gcp_credentials["private_key"] = gcp_credentials["private_key"].replace("\\n", "\n")
     
     vision_credentials = service_account.Credentials.from_service_account_info(gcp_credentials)
@@ -44,12 +50,15 @@ try:
 except KeyError as e:
     st.error(f"시스템 오류: Secrets 설정 누락 - {e}")
     st.stop()
+except json.JSONDecodeError as e:
+    st.error(f"구글 비전 JSON 키 형식이 잘못되었습니다: {e}")
+    st.stop()
 except Exception as e:
     st.error(f"구글 비전 인증 오류: {e}")
     st.stop()
 
 # ==========================================
-# 3. 보조 함수 (가이드라인, 식약처 DB 조회)
+# 3. 보조 함수 (법령 가이드라인, 식약처 DB 조회)
 # ==========================================
 @st.cache_data
 def load_guideline_knowledge():
@@ -100,6 +109,7 @@ def extract_text_with_google_vision(uploaded_files):
     for file in uploaded_files:
         content = file.read()
         image = vision.Image(content=content)
+        # 밀집 텍스트(영수증, 문서 등) 판독 모드 적용
         response = vision_client.document_text_detection(image=image)
         
         if response.error.message:
@@ -114,7 +124,7 @@ def extract_text_with_google_vision(uploaded_files):
     return extracted_text
 
 def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
-    """제2 에이전트: 제미나이 LLM으로 1대1 팩트 교차 검증"""
+    """제2 에이전트: 제미나이 LLM으로 1대1 팩트 교차 검증 수행"""
     model = genai.GenerativeModel('gemini-2.5-flash')
     content_payload = []
     chunk_list = []
@@ -140,7 +150,7 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
        - 시안의 '영양정보' 표기(열량, 당류, 콜레스테롤, 트랜스지방 등)를 팩시안과 단위(g/mg), 수치, 비율(%)까지 1대1로 대조하십시오. (예: 시안 '당류 1g 1%' vs 팩시안 '당류 4g 4%' / 시안 '콜레스테롤 0mg 33%' vs 팩시안 '0mg 0%' / 시안 '트랜스지방 0mg' vs 팩시안 '0g'). 단 하나라도 다르면 "치명적 위반(오기재)"으로 적발하십시오.
 
     🔥 2. [알레르기 주의문구 1대1 검증 및 논리 모순]:
-       - 시안의 알레르기 주의문구를 팩시안의 주의문구와 1대1로 대조하여 없는 원료(예: 땅콩)가 들어갔거나 누락되었는지 확인하십시오.
+       - 시안의 알레르기 주의문구를 팩시안의 주의문구와 1대1로 대조하여 없는 원료(예: 땅콩, 잣 등)가 들어갔거나 누락되었는지 확인하십시오.
        - 특히 제품의 주원료(예: 잣, 아몬드 등)가 주의문구(교차오염 우려)에 중복으로 기재되어 있다면 논리 모순으로 적발하십시오.
 
     🚨 3. [연출 컷 주의문구]: 잔에 따르는 모습 등 조리/연출 이미지 주변에 '연출된 이미지' 또는 '이미지 예' 주의문구가 누락되었다면 지적하십시오.
