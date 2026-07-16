@@ -1,6 +1,7 @@
 streamlit
-requests
-pandas
-pillow
-PyPDF2
 google-generativeai
+google-cloud-vision
+google-auth
+Pillow
+PyPDF2
+requests
