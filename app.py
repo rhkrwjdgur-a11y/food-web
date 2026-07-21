@@ -14,7 +14,7 @@ import re
 # ==========================================
 # 1. 기본 페이지 설정 및 CSS
 # ==========================================
-st.set_page_config(page_title="식품 표시사항 정밀 검토 시스템", layout="wide")
+st.set_page_config(page_title="상세페이지 정밀 검토 시스템", layout="wide")
 
 st.markdown("""
     <style>
@@ -116,7 +116,7 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
 
         # --- [2단계] 선임자급 핀셋 검수 (과잉 지적 금지 룰 적용) ---
         review_prompt = f"""
-        당신은 실무 경험이 풍부한 식품 표시사항 QC 선임자입니다. 
+        당신은 실무 경험이 풍부한 식품 마케팅 상세페이지 QC 선임자입니다. 
         아래 [1단계 시안 텍스트]와 [Google Vision API 팩시안 데이터]를 대조하십시오.
 
         [1단계 시안 텍스트 (오타 포함본)]
@@ -128,14 +128,15 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         🚨 [절대 주의: 과잉 지적(Nitpicking) 금지] 🚨
         상세페이지 상/중단의 마케팅 디자인 구간에는 당연히 영양정보나 원재료명이 없습니다. 시안 구간에 해당 정보가 없다고 해서 "영양정보표 누락", "원재료명 누락", "알레르기 문구 누락"이라고 절대 지적하지 마십시오. 오직 **시안에 실제로 적혀있는 텍스트나 숫자**가 팩시안과 '다를 때'만 지적하십시오. 위반 사항이 없으면 무조건 "정상" 처리하십시오.
 
-        🔥 [핵심 핀셋 검수 룰 (반드시 확인)]
+        🔥 [상세페이지 핵심 핀셋 검수 룰 (반드시 확인)]
         1. [영양정보 복붙 오타 색출]: 하단 고시정보 구간에 '영양정보'가 적혀있다면 수치를 팩시안과 1:1 대조하십시오. 특히 디자이너가 다른 제품 표를 복붙하여 **당류 1g 1% (정답: 4g 4%)** 또는 **콜레스테롤 0mg 33% (정답: 0mg 0%)**, **트랜스지방 0mg (정답 0g)** 등으로 잘못 적지 않았는지 칼같이 적발하십시오.
-        2. [알레르기 문구 대조]: 하단 고시정보 구간에 '주의문구'가 있다면 팩시안과 대조하십시오. 특히 아몬드&잣 제품 시안에 **'땅콩', '잣'**이 잘못 포함되어 있다면 즉시 삭제 지적하십시오. (팩시안 주의문구에는 땅콩, 잣이 없음)
+        2. [알레르기 문구 대조]: 하단 고시정보 구간에 '주의문구'가 있다면 팩시안과 대조하십시오. (팩시안 주의문구에 없는 땅콩, 잣 등이 포함되어 있다면 즉시 지적).
         3. [제품명 오기재]: 카피나 제품명에 '연세두유 고단백 검은콩'이라고만 되어 있다면 **'&고칼슘'**이 누락된 것이므로 추가하라고 지적하십시오.
         4. [비타민 기능성 명칭]: 비타민E 설명에 **'항산화작용을 하여'**가 빠져있다면 지적하십시오.
-        5. [연출 컷 주의문구]: 잔에 두유를 따르거나 원물(콩, 잣 등)이 있는 이미지 구간에는 반드시 **'이미지 예'** 또는 **'연출된 이미지'**라는 문구가 있어야 합니다. 없으면 지적하십시오.
+        5. [연출 컷 주의문구]: 제공된 이미지를 보고, 잔에 두유를 따르거나 원물(콩, 잣 등)이 있는 이미지 구간에는 반드시 **'이미지 예'** 또는 **'연출된 이미지'**라는 문구가 있어야 합니다. 없으면 지적하십시오.
         6. [카피 오타]: 마케팅 카피 중 **'무규 포장'**이라는 오타가 있으면 '무균 포장'으로 고치라고 지적하십시오.
         7. [원재료명 오기재]: 하단 정보에 원재료명이 있다면 **'유성비타민지방산에스테르' (정답: 유성비타민A지방산에스테르)** 와 같이 A가 빠지거나 철자가 틀린 곳을 찾아내십시오.
+        8. [원물 은폐 기만]: 시안에서 검은콩이나 아몬드&잣을 제품명으로 크게 강조하는데, 팩시안 배합비율이 1% 미만의 극소량(예: 0.21%)이라면 주원료 기만 소지가 있음을 지적하십시오.
 
         반드시 JSON 배열 형식으로 응답하십시오.
         [
@@ -143,7 +144,7 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
             "image_index": {idx},
             "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
             "title": "검토 항목 요약",
-            "exact_text_in_design": "1단계 시안 텍스트에서 발췌한 원문",
+            "exact_text_in_design": "1단계 시안 텍스트에서 발췌한 원문 (또는 해당 이미지 연출 설명)",
             "fact_or_legal_ground": "팩시안 원문 데이터",
             "discrepancy_analysis": "위반 사항에 대한 명확한 지적 내용"
           }}
@@ -153,7 +154,6 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         try:
             review_response = model.generate_content([review_prompt, img_obj], generation_config=genai.types.GenerationConfig(temperature=0.0, response_mime_type="application/json"))
             chunk_issues = json.loads(review_response.text)
-            # '정상'인 항목은 리포트에서 숨기거나 패스 처리하도록 필터링 적용
             filtered_issues = [issue for issue in chunk_issues if issue.get("risk_level") != "정상"]
             final_report.extend(filtered_issues)
         except Exception as e:
@@ -171,9 +171,9 @@ uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 
 st.sidebar.markdown("---")
 uploaded_master_fact = st.sidebar.file_uploader("4️⃣ 확정 표시사항 기준안 (최종 팩시안)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 st.sidebar.markdown("---")
-trigger_api = st.sidebar.button("⚙️ 핀셋 교차 검증 (과잉 지적 최소화)", use_container_width=True)
+trigger_api = st.sidebar.button("⚙️ 상세페이지 핀셋 교차 검증", use_container_width=True)
 
-st.title("🛡️ 식품 표시·광고 정밀 통제 시스템 (Sniper Ver.)")
+st.title("🛡️ 마케팅 상세페이지 정밀 통제 시스템 (Sniper Ver.)")
 st.markdown("---")
 
 if not uploaded_main_images:
@@ -219,7 +219,7 @@ else:
                                 st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
                                 st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
                                 st.markdown(f"""
-                                - **시안 텍스트:** {issue.get('exact_text_in_design', '')}
+                                - **시안 텍스트/이미지:** {issue.get('exact_text_in_design', '')}
                                 - **QC 팩트 기준:** {issue.get('fact_or_legal_ground', '')}
                                 - **조치사항:** {issue.get('discrepancy_analysis', '')}
                                 """)
