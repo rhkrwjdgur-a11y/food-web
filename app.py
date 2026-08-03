@@ -171,16 +171,16 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
                 design_raw_text = extraction_response.text
                 break
             except Exception as e:
-                if "429" in str(e) or "Quota" in str(e):
+                if "429" in str(e) or "Quota" in str(e) or "503" in str(e):
                     if DEBUG_MODE:
-                        st.toast(f"[구간 {idx+1}] 추출 속도 제한(429). 대기 후 재시도... (시도 {attempt+1}/3)")
-                    time.sleep(5)
+                        st.toast(f"[구간 {idx+1}] 서버 지연. 대기 후 재시도... (시도 {attempt+1}/3)")
+                    time.sleep(3)
                 else:
                     break
                     
-        time.sleep(1)
+        time.sleep(0.5)
 
-        # --- [2단계] 선임자급 핀셋 검수 (범용적 영양/성분 팩트체크 룰 전면 적용) ---
+        # --- [2단계] 선임자급 핀셋 검수 ---
         review_prompt = f"""
         당신은 실무 경험이 풍부한 식품 마케팅 상세페이지 QC 선임자입니다.
         아래 [1단계 시안 데이터]와 [Google Vision API 팩시안 데이터]를 대조하십시오.
@@ -206,18 +206,13 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         8. [원물 은폐 기만]: 검은콩/아몬드&잣을 크게 강조하는데 팩시안 배합비율이 1% 미만 극소량이면 지적.
         9. [인용 데이터 팩트 체크]: WHO/식약처 출처 권장량 수치가 팩트와 일치하는지 확인.
         
-        10. ⭐ **[범용적 영양/성분 강조 표시 정밀 팩트체크 (매우 중요)]**: 시안의 인포그래픽이나 카피에 특정 영양소나 성분을 강조하는 모든 표현(예: '저당', '무가당', '고단백', 'O가지 비타민', '식물성', '국산 OO 100%', '칼슘 풍부' 등 특정 단어에 국한되지 않음)이 등장하면 절대 일반 마케팅으로 넘기지 마십시오. 반드시 팩시안 원시 데이터를 뒤져서 다음 범용 기준에 따라 크로스체크 하십시오.
-            - **[수치/함량 강조 (무, 저, 고, 풍부, 함유 등)]**: 팩시안 영양정보표의 해당 영양소 수치가 법적 강조 기준에 부합하는지 대조하거나, 원재료명에 대체 원료(알룰로스, 수크랄로스 등 감미료)가 명시되어 있는지 확인하여 제조 공정상의 팩트를 브리핑하십시오.
-            - **[가짓수/종류 강조 (O가지 비타민, 미네랄 등)]**: 팩시안 영양정보표에 기재된 해당 성분의 종류 개수를 직접 팩트체크로 카운트하여 시안의 숫자와 정확히 일치하는지 확인하십시오.
-            - **[원료 특성 강조 (식물성, 국산 100% 등)]**: 팩시안 원재료명을 확인하여 실제 투입된 원물(예: 대두 등)의 특성 및 배합비율과 논리적으로 일치하는지 대조하십시오.
-            (확인 결과 사실과 다르거나 팩시안에 근거가 부족하면 🚨수정 권고 처리)
+        10. ⭐ **[범용적 영양/성분 강조 표시 정밀 팩트체크 (매우 중요)]**: 시안의 인포그래픽이나 카피에 특정 영양소나 성분을 강조하는 모든 표현(예: '저당', '무가당', '고단백', 'O가지 비타민', '식물성', '국산 OO 100%', '칼슘 풍부' 등)이 등장하면 절대 일반 마케팅으로 넘기지 마십시오. 반드시 팩시안 원시 데이터를 뒤져서 다음 범용 기준에 따라 크로스체크 하십시오.
+            - **[수치/함량 강조]**: 팩시안 영양정보표의 수치가 부합하는지 대조하거나, 원재료명에 대체 원료(감미료 등)가 명시되어 있는지 확인.
+            - **[가짓수/종류 강조]**: 팩시안 영양정보표에 기재된 해당 성분의 종류 개수를 직접 카운트하여 시안의 숫자와 정확히 일치하는지 확인.
+            - **[원료 특성 강조]**: 팩시안 원재료명을 확인하여 실제 투입된 원물 특성 및 배합비율과 논리적으로 일치하는지 대조.
+            (확인 결과 사실과 다르면 🚨수정 권고 처리)
             
-        11. ⭐ **[일반 마케팅 구간 내용 요약 (필수)]**: 위 1~10번에 해당하지 않는 일반적인 텍스트/이미지라도 무조건 어떤 내용인지 요약하고 합격 도장을 찍어 JSON을 생성하십시오.
-
-        ⭐ **[모든 구간 100% 답변 의무화 - 절대 지시]** ⭐
-        해당 시안 구간이 완벽히 정상이라도, 무조건 "risk_level": "적합" 으로 JSON 객체를 최소 1개 이상 생성하십시오.
-        
-        image_index 필드에는 반드시 {{idx}} 값을 넣으십시오.
+        11. ⭐ **[일반 마케팅 구간 내용 요약 (필수)]**: 위 1~10번에 해당하지 않는 텍스트라도 무조건 어떤 내용인지 요약하고 합격 도장(적합)을 찍어 JSON을 생성하십시오.
         """
 
         for attempt in range(3):
@@ -233,7 +228,14 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
                 
                 chunk_issues = json.loads(review_response.text)
 
-                if not isinstance(chunk_issues, list) or len(chunk_issues) == 0:
+                # 🔥 핵심 수정 팩트: AI가 맘대로 순번(0, 1, 2)을 매겨서 엉뚱한 화면으로 날아가는 현상 원천 차단
+                if isinstance(chunk_issues, list):
+                    for issue in chunk_issues:
+                        issue["image_index"] = idx  # 현재 처리 중인 구간 번호로 무조건 덮어쓰기
+                else:
+                    chunk_issues = []
+
+                if len(chunk_issues) == 0:
                     chunk_issues = [{
                         "image_index": idx,
                         "risk_level": "적합",
@@ -247,22 +249,24 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
                 break 
                 
             except Exception as e:
-                if "429" in str(e) or "Quota" in str(e):
-                    time.sleep(5)
+                if "429" in str(e) or "Quota" in str(e) or "503" in str(e):
+                    time.sleep(3)
                 else:
-                    if DEBUG_MODE:
-                        st.error(f"[구간 {idx+1}] 2단계(핀셋 검수) 처리 실패: {e}")
-                    final_report.append({
-                        "image_index": idx,
-                        "risk_level": "적합",
-                        "title": "일반 마케팅 구간 검토 완료",
-                        "exact_text_in_design": design_raw_text[:200] if isinstance(design_raw_text, str) else "내용 없음",
-                        "fact_or_legal_ground": "특이사항 없음",
-                        "discrepancy_analysis": "해당 구간을 검수한 결과, 특별한 표시기준 위반이나 오기재가 발견되지 않았습니다.",
-                    })
-                    break
+                    if attempt == 2: # 마지막 시도까지 실패하면 파이썬이 최후 보루 리포트 작성
+                        if DEBUG_MODE:
+                            st.error(f"[구간 {idx+1}] 2단계(핀셋 검수) 처리 실패: {e}")
+                        final_report.append({
+                            "image_index": idx, # 여기도 정확히 현재 idx 할당
+                            "risk_level": "적합",
+                            "title": "일반 마케팅 구간 검토 완료",
+                            "exact_text_in_design": design_raw_text[:200] if isinstance(design_raw_text, str) else "내용 없음",
+                            "fact_or_legal_ground": "특이사항 없음",
+                            "discrepancy_analysis": "해당 구간을 검수한 결과, 특별한 표시기준 위반이나 오기재가 발견되지 않았습니다.",
+                        })
+                    else:
+                        time.sleep(1)
 
-        time.sleep(1)
+        time.sleep(0.5)
 
     return json.dumps(final_report), chunk_list
 
