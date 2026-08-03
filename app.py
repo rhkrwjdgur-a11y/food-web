@@ -31,11 +31,11 @@ st.markdown("""
 try:
     genai.configure(api_key=st.secrets["AI_VISION_API_KEY"])
     FOOD_API_KEY = st.secrets["FOOD_SAFETY_API_KEY"]
-    
+
     gcp_json_string = st.secrets["gcp_service_account"]["GOOGLE_VISION_KEY"]
     gcp_credentials = json.loads(gcp_json_string)
     gcp_credentials["private_key"] = gcp_credentials["private_key"].replace("\\n", "\n")
-    
+
     vision_credentials = service_account.Credentials.from_service_account_info(gcp_credentials)
     vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
 
@@ -50,36 +50,91 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 3. 보조 함수 
+# 2-1. 디버그 모드 (원인 파악용 - 문제 해결되면 꺼도 됩니다)
+# ==========================================
+DEBUG_MODE = st.sidebar.checkbox("🐞 디버그 모드 (원인 진단용)", value=True)
+
+# ==========================================
+# 2-2. Gemini 응답 스키마 (핵심 수정: 프롬프트로만 강제하지 않고 API 레벨에서 강제)
+# ==========================================
+REVIEW_RESPONSE_SCHEMA = {
+    "type": "ARRAY",
+    "minItems": 1,
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "image_index": {"type": "INTEGER"},
+            "risk_level": {
+                "type": "STRING",
+                "enum": ["치명적 위반", "수정 권고", "적합"]
+            },
+            "title": {"type": "STRING"},
+            "exact_text_in_design": {"type": "STRING"},
+            "fact_or_legal_ground": {"type": "STRING"},
+            "discrepancy_analysis": {"type": "STRING"},
+        },
+        "required": [
+            "image_index",
+            "risk_level",
+            "title",
+            "exact_text_in_design",
+            "fact_or_legal_ground",
+            "discrepancy_analysis",
+        ],
+    },
+}
+
+# ==========================================
+# 3. 보조 함수
 # ==========================================
 def query_food_nutrient_db(food_name):
-    if not food_name or not FOOD_API_KEY: return None
+    if not food_name or not FOOD_API_KEY:
+        return None
     std_dict = {"쇠고기": "소고기", "계육": "닭고기", "돈육": "돼지고기"}
     search_name = std_dict.get(food_name.strip(), food_name.strip())
-    url = f"http://apis.data.go.kr/1471000/FoodNtrCpntDbInfo02/getFoodNtrCpntDbInq02?serviceKey={FOOD_API_KEY}&pageNo=1&numOfRows=200&type=json&DESC_KOR={urllib.parse.quote(search_name)}"
+    url = (
+        f"http://apis.data.go.kr/1471000/FoodNtrCpntDbInfo02/getFoodNtrCpntDbInq02"
+        f"?serviceKey={FOOD_API_KEY}&pageNo=1&numOfRows=200&type=json"
+        f"&DESC_KOR={urllib.parse.quote(search_name)}"
+    )
     try:
         res_json = json.loads(requests.get(url, timeout=15).text.strip())
         body = res_json.get('body') or res_json.get('response', {}).get('body', {})
         items = body.get('items', [])
         return items['item'] if isinstance(items, dict) and 'item' in items else items if isinstance(items, list) else [items]
-    except: return None
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"[DB 조회 실패] {food_name}: {e}")
+        return None
+
 
 def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel('gemini-2.5-flash')
-    payload = [img.resize((1000, int(img.size[1] * (1000.0/img.size[0]))), Image.LANCZOS) if img.size[0] > 1000 else img for img in main_images]
+    payload = [
+        img.resize((1000, int(img.size[1] * (1000.0 / img.size[0]))), Image.LANCZOS) if img.size[0] > 1000 else img
+        for img in main_images
+    ]
     payload.append("""타 식품과 수치를 비교하거나 식약처 DB를 인용하는 문구가 있다면 대분류 명사를 key로 JSON 출력. 없으면 "NONE" 출력.""")
     try:
-        res = model.generate_content(payload, generation_config=genai.types.GenerationConfig(temperature=0.0)).text.strip()
-        if res == "NONE": return {}
+        res = model.generate_content(
+            payload, generation_config=genai.types.GenerationConfig(temperature=0.0)
+        ).text.strip()
+        if res == "NONE":
+            return {}
         return json.loads(re.sub(r'```json\s*|```\s*', '', res))
-    except: return {}
+    except Exception as e:
+        if DEBUG_MODE:
+            st.warning(f"[DB 키워드 추출 실패] {e}")
+        return {}
+
 
 # ==========================================
 # 4. 투트랙 에이전트 시스템 (캐싱 및 보고서 무조건 작성 고도화)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def extract_text_with_google_vision(uploaded_files):
-    if not uploaded_files: return "팩시안 이미지 없음"
+    if not uploaded_files:
+        return "팩시안 이미지 없음"
     extracted_text = ""
     for file in uploaded_files:
         content = file.read()
@@ -93,15 +148,19 @@ def extract_text_with_google_vision(uploaded_files):
         file.seek(0)
     return extracted_text
 
+
 def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     final_report = []
     chunk_list = []
-    
+
     for idx, img_obj in enumerate(main_images):
-        img_obj = img_obj.resize((2000, int(img_obj.size[1] * (2000.0/img_obj.size[0]))), Image.LANCZOS) if img_obj.size[0] > 2000 else img_obj
+        img_obj = (
+            img_obj.resize((2000, int(img_obj.size[1] * (2000.0 / img_obj.size[0]))), Image.LANCZOS)
+            if img_obj.size[0] > 2000 else img_obj
+        )
         chunk_list.append(img_obj)
-        
+
         # --- [1단계] 텍스트 필사 및 시각 요소(사진) 동시 묘사 ---
         extract_prompt = """
         당신은 시력 2.0의 철저하고 객관적인 이미지 분석기입니다. 다음 두 가지를 수행하십시오.
@@ -110,14 +169,23 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         텍스트나 연출 사진이 아예 없다면 "해당 없음"이라고만 출력하십시오.
         """
         try:
-            extraction_response = model.generate_content([extract_prompt, img_obj], generation_config=genai.types.GenerationConfig(temperature=0.0))
+            extraction_response = model.generate_content(
+                [extract_prompt, img_obj],
+                generation_config=genai.types.GenerationConfig(temperature=0.0),
+            )
             design_raw_text = extraction_response.text
-        except:
+        except Exception as e:
             design_raw_text = "텍스트/시각요소 추출 실패"
+            if DEBUG_MODE:
+                st.warning(f"[구간 {idx}] 1단계(추출) 실패: {e}")
+
+        if DEBUG_MODE:
+            with st.expander(f"🔍 [구간 {idx}] 1단계 추출 결과 (디버그)"):
+                st.text(design_raw_text)
 
         # --- [2단계] 선임자급 핀셋 검수 (모든 구간 100% 브리핑 의무화) ---
         review_prompt = f"""
-        당신은 실무 경험이 풍부한 식품 마케팅 상세페이지 QC 선임자입니다. 
+        당신은 실무 경험이 풍부한 식품 마케팅 상세페이지 QC 선임자입니다.
         아래 [1단계 시안 데이터]와 [Google Vision API 팩시안 데이터]를 대조하십시오.
 
         [1단계 시안 데이터 (현재 구간에 존재하는 텍스트 및 시각 요소)]
@@ -143,43 +211,75 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         10. ⭐ **[일반 마케팅 구간 내용 요약 (필수)]:** 위 1~9번에 해당하는 명확한 팩트체크 타겟이 없더라도, 시안에 단백질의 역할, 제품의 장점 등 일반적인 마케팅 문구나 이미지가 있다면 반드시 그 내용이 무엇인지 요약하고 합격 도장을 찍으십시오.
 
         ⭐ **[모든 구간 100% 답변 의무화 - 절대 지시]** ⭐
-        "문제나 타겟이 없으니 빈 배열([])을 출력한다"는 논리는 이제 시스템 오류로 간주됩니다.
-        해당 시안 구간이 완벽히 정상이라도, **무조건 "risk_level": "적합" 으로 JSON 객체를 최소 1개 이상 무조건 생성**하십시오. 
-        상세 사유에는 **"이 구간은 [단백질이 중요한 이유]에 대해 설명하고 있으며, 팩시안 및 일반적 사실과 모순되지 않아 적합함"**과 같이 합격시킨 명확한 근거(브리핑)를 서술하십시오.
+        해당 시안 구간이 완벽히 정상이라도, 무조건 "risk_level": "적합" 으로 JSON 객체를 최소 1개 이상 생성하십시오.
+        상세 사유에는 "이 구간은 [단백질이 중요한 이유]에 대해 설명하고 있으며, 팩시안 및 일반적 사실과 모순되지 않아 적합함"과 같이 합격시킨 명확한 근거(브리핑)를 서술하십시오.
 
-        반드시 JSON 배열 형식으로 응답하십시오.
-        [
-          {{
-            "image_index": {idx},
-            "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "적합",
-            "title": "검토 항목 요약 (예: 마케팅 문구 검토, 단백질 권장량 팩트체크 등)",
-            "exact_text_in_design": "1단계 시안 데이터에서 발췌한 핵심 텍스트 또는 이미지 요약",
-            "fact_or_legal_ground": "팩시안 원문 데이터 또는 식약처/WHO 기준 (없으면 '일반 영양 정보')",
-            "discrepancy_analysis": "판정 사유 (적합할 경우: '이 구간은 ~내용을 설명하고 있으며, ~출처와 일치하여 적합함')"
-          }}
-        ]
+        image_index 필드에는 반드시 {idx} 값을 넣으십시오.
         """
-        
+
         try:
-            review_response = model.generate_content([review_prompt, img_obj], generation_config=genai.types.GenerationConfig(temperature=0.0, response_mime_type="application/json"))
+            review_response = model.generate_content(
+                [review_prompt, img_obj],
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                    response_schema=REVIEW_RESPONSE_SCHEMA,
+                ),
+            )
+
+            if DEBUG_MODE:
+                with st.expander(f"🔍 [구간 {idx}] 2단계 원본 응답 (디버그)"):
+                    st.code(review_response.text[:3000], language="json")
+
             chunk_issues = json.loads(review_response.text)
-            
+
+            if not isinstance(chunk_issues, list) or len(chunk_issues) == 0:
+                # 스키마를 강제해도 혹시 빈 배열이 오면 최소 1개는 채워서 UI가 fallback으로
+                # 조용히 숨지 않고 실제로 무슨 일이 있었는지 보이게 함
+                chunk_issues = [{
+                    "image_index": idx,
+                    "risk_level": "적합",
+                    "title": "검토 완료 (내용 없음)",
+                    "exact_text_in_design": design_raw_text[:300],
+                    "fact_or_legal_ground": "일반 영양 정보",
+                    "discrepancy_analysis": "모델이 빈 배열을 반환하여 시스템이 기본값으로 채움. 디버그 모드에서 원본 응답을 확인하세요.",
+                }]
+
             # 모든 결과(위반, 권고, 적합)를 리포트에 100% 포함시킵니다.
             final_report.extend(chunk_issues)
+
         except Exception as e:
-            pass
-            
-        time.sleep(1.5) 
-        
+            # 핵심 수정: 예외를 무음 처리(pass)하지 않고 반드시 화면에 노출
+            st.error(f"[구간 {idx}] 2단계(핀셋 검수) 처리 실패: {e}")
+            if DEBUG_MODE and 'review_response' in dir():
+                st.code(getattr(review_response, "text", "응답 텍스트 없음")[:2000])
+
+            # 실패해도 최소한 실패했다는 사실 자체를 리포트에 남김 (조용히 사라지지 않게)
+            final_report.append({
+                "image_index": idx,
+                "risk_level": "수정 권고",
+                "title": "⚠️ AI 검수 처리 실패",
+                "exact_text_in_design": design_raw_text[:300] if isinstance(design_raw_text, str) else "",
+                "fact_or_legal_ground": "시스템 오류",
+                "discrepancy_analysis": f"이 구간은 AI 응답 파싱/생성 과정에서 오류가 발생하여 실제 검수가 이루어지지 않았습니다. 오류 내용: {e}",
+            })
+
+        time.sleep(1.5)
+
     return json.dumps(final_report), chunk_list
+
 
 # ==========================================
 # 5. UI 및 실행 흐름
 # ==========================================
 st.sidebar.markdown("### 📥 심사 대상 파일 등록")
-uploaded_main_images = st.sidebar.file_uploader("0️⃣ 메인 상세페이지 시안 (다중 업로드)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploaded_main_images = st.sidebar.file_uploader(
+    "0️⃣ 메인 상세페이지 시안 (다중 업로드)", type=["jpg", "jpeg", "png"], accept_multiple_files=True
+)
 st.sidebar.markdown("---")
-uploaded_master_fact = st.sidebar.file_uploader("4️⃣ 확정 표시사항 기준안 (최종 팩시안)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+uploaded_master_fact = st.sidebar.file_uploader(
+    "4️⃣ 확정 표시사항 기준안 (최종 팩시안)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True
+)
 st.sidebar.markdown("---")
 trigger_api = st.sidebar.button("⚙️ 상세페이지 핀셋 교차 검증", use_container_width=True)
 
@@ -191,11 +291,15 @@ if not uploaded_main_images:
 else:
     main_img_objs = [Image.open(f) for f in uploaded_main_images]
     if not trigger_api:
-        for img in main_img_objs: st.image(img, use_container_width=True)
+        for img in main_img_objs:
+            st.image(img, use_container_width=True)
     else:
         with st.spinner("👁️ [팩시안 기준점 확보] 구글 비전 API가 팩시안을 해독 중입니다... (캐시 적용)"):
             vision_extracted_text = extract_text_with_google_vision(uploaded_master_fact)
             st.success("✅ 구글 비전 API 팩시안 판독 완료")
+            if DEBUG_MODE:
+                with st.expander("🔍 팩시안 OCR 원문 (디버그)"):
+                    st.text(vision_extracted_text)
 
         with st.spinner("🔍 [DB 연동] 외부 영양성분 DB 타겟 탐지 중..."):
             auto_dict = auto_extract_db_keywords_json(main_img_objs)
@@ -204,39 +308,56 @@ else:
                 for base_food, detail_cond in auto_dict.items():
                     db_data = query_food_nutrient_db(base_food)
                     if db_data:
-                        simplified_db = [f"- [{row.get('DESC_KOR', '이름없음')}] 열량:{row.get('NUTR_CONT1')}kcal, 단백질:{row.get('NUTR_CONT3')}g, 지방:{row.get('NUTR_CONT4')}g" for row in db_data[:20]]
+                        simplified_db = [
+                            f"- [{row.get('DESC_KOR', '이름없음')}] 열량:{row.get('NUTR_CONT1')}kcal, "
+                            f"단백질:{row.get('NUTR_CONT3')}g, 지방:{row.get('NUTR_CONT4')}g"
+                            for row in db_data[:20]
+                        ]
                         final_db_context_text += f"\n[검색어 '{base_food}'] DB 요약\n" + "\n".join(simplified_db) + "\n"
 
         with st.spinner("⚖️ [제2 에이전트] 각 구간의 마케팅 문구와 팩트를 100% 브리핑합니다..."):
             try:
-                json_result, chunk_list = analyze_design_with_ai(main_img_objs, vision_extracted_text, final_db_context_text)
+                json_result, chunk_list = analyze_design_with_ai(
+                    main_img_objs, vision_extracted_text, final_db_context_text
+                )
                 report_data = json.loads(json_result)
-                
+
                 for idx, chunk_img in enumerate(chunk_list):
                     st.markdown(f"### 📍 시안 구간 [{idx + 1}]")
                     row_col1, row_col2 = st.columns([1, 1])
-                    with row_col1: st.image(chunk_img, use_container_width=True)
+                    with row_col1:
+                        st.image(chunk_img, use_container_width=True)
                     with row_col2:
                         issues = [r for r in report_data if r.get("image_index") == idx]
-                        if not issues: 
-                            # 만약 통신 오류 등으로 AI가 답변을 아예 생성하지 못했을 때만 뜨는 최후의 보루입니다.
-                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 내용 요약</div>이 구간의 이미지와 텍스트는 일반적인 마케팅 구성으로 확인되며, 특이사항 없이 적합합니다.</div>', unsafe_allow_html=True)
+                        if not issues:
+                            # 정상 흐름에서는 여기 도달하지 않아야 함 (analyze_design_with_ai가
+                            # 항상 최소 1개 항목을 채워 넣기 때문). 만약 여기 뜬다면 image_index
+                            # 매칭 자체가 어긋난 것이므로 디버그 모드를 켜서 확인하세요.
+                            st.markdown(
+                                '<div class="risk-warning"><div class="card-title">⚠️ 매칭 오류</div>'
+                                '이 구간에 해당하는 검토 결과를 찾지 못했습니다 (image_index 불일치 가능성). '
+                                '디버그 모드를 켜서 원본 응답을 확인해 주세요.</div>',
+                                unsafe_allow_html=True,
+                            )
                         else:
                             for issue in issues:
                                 risk = issue.get("risk_level", "적합")
-                                
+
                                 if risk == "치명적 위반":
                                     css_class = "risk-critical"
                                     icon = "❌"
                                 elif risk == "수정 권고":
                                     css_class = "risk-warning"
                                     icon = "⚠️"
-                                else: # "적합"
+                                else:  # "적합"
                                     css_class = "risk-pass"
                                     icon = "✅"
-                                
+
                                 st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-                                st.markdown(f'<div class="card-title">{icon} {issue.get("title", "검토 완료")}</div>', unsafe_allow_html=True)
+                                st.markdown(
+                                    f'<div class="card-title">{icon} {issue.get("title", "검토 완료")}</div>',
+                                    unsafe_allow_html=True,
+                                )
                                 st.markdown(f"""
                                 - **해당 구간 내용 요약:** {issue.get('exact_text_in_design', '')}
                                 - **QC 팩트 근거:** {issue.get('fact_or_legal_ground', '')}
@@ -244,4 +365,5 @@ else:
                                 """)
                                 st.markdown('</div>', unsafe_allow_html=True)
                     st.markdown("---")
-            except Exception as e: st.error(f"오류 발생: {e}")
+            except Exception as e:
+                st.error(f"오류 발생: {e}")
