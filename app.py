@@ -71,7 +71,7 @@ def auto_extract_db_keywords_json(main_images):
     try:
         res = model.generate_content(payload, generation_config=genai.types.GenerationConfig(temperature=0.0)).text.strip()
         if res == "NONE": return {}
-        return json.loads(re.sub(r'```json\s*|```\s*', '', res))
+        return json.loads(re.sub(r'```json\s*|যোগে```\s*', '', res))
     except: return {}
 
 # ==========================================
@@ -115,7 +115,7 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         except:
             design_raw_text = "텍스트/시각요소 추출 실패"
 
-        # --- [2단계] 선임자급 핀셋 검수 (연출 컷 예외 룰 추가) ---
+        # --- [2단계] 선임자급 핀셋 검수 (적합 판정 시 상세 보고 의무화) ---
         review_prompt = f"""
         당신은 실무 경험이 풍부한 식품 마케팅 상세페이지 QC 선임자입니다. 
         아래 [1단계 시안 데이터]와 [Google Vision API 팩시안 데이터]를 대조하십시오.
@@ -127,7 +127,7 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         {ocr_extracted_text}
 
         🚨 [과잉 지적 금지 및 연출 컷 예외 절대 규칙] 🚨
-        1. **텍스트 창조 지적 금지:** [1단계 시안 데이터]에 '영양성분표'나 '원재료명' 수치가 아예 없다면, "누락되었다"고 지적하지 말고 팩트 체크 대상이 아니므로 무조건 "정상" 처리하십시오. (마케팅 구간엔 없는 게 당연함)
+        1. **텍스트 창조 지적 금지:** [1단계 시안 데이터]에 '영양성분표'나 '원재료명' 수치가 아예 없다면, "누락되었다"고 지적하지 말고 팩트 체크 대상이 아니므로 무조건 "적합" 처리하십시오.
         2. **⭐ [연출 컷 주의문구 예외]:** 단, [1단계 시안 데이터]에 '[시각 요소]'로 고기, 생선, 콩, 잔에 따르는 모습 등 연출 사진이 묘사되어 있는데, 텍스트 추출 내용 중에 '이미지 예' 또는 '연출된 이미지'라는 문구가 "없다면", 이것은 명백한 주의문구 누락이므로 반드시 "수정 권고"로 지적해야 합니다.
 
         🔥 [상세페이지 핵심 핀셋 검수 룰 (기존 룰 100% 유지)]
@@ -139,17 +139,20 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         6. [카피 오타]: 마케팅 카피 중 '무규 포장' 오타가 있으면 '무균 포장'으로 지적.
         7. [원재료명 오기재]: [1단계 시안]에 원재료명이 적혀있을 때만 철자 오류(유성비타민지방산에스테르 등) 색출.
         8. [원물 은폐 기만]: 시안에서 검은콩이나 아몬드&잣을 크게 강조하는데, 팩시안 배합비율이 1% 미만의 극소량(예: 0.21%)이라면 기만 소지 지적.
-        9. [인용 데이터 팩트 체크]: WHO, 식약처 등 출처를 표기하며 영양소 권장량을 설명하는 구간이 있다면, 당신의 사전 지식 및 식약처 기준치를 바탕으로 해당 수치(예: 단백질 55g 등)가 객관적 사실과 일치하는지 팩트 체크 하십시오. 과장되었으면 적발.
+        9. [인용 데이터 팩트 체크]: WHO, 식약처 등 출처를 표기하며 단백질, 칼슘 등의 권장량을 설명하는 구간이 있다면, 당신의 사전 지식(식약처 1일 영양성분 기준치 등)을 바탕으로 해당 수치가 팩트와 일치하는지 체크하십시오.
+
+        ⭐ **[적합(Pass) 판정 시 상세 보고 의무화 - 절대 지시]** ⭐
+        이전처럼 문제가 없다고 무조건 숨기지 마십시오. 만약 해당 시안 구간이 식약처 기준, 팩시안 정보, 마케팅 문구 등을 정확히 표기하여 문제가 없다면, **반드시 "risk_level": "적합" 으로 JSON을 생성하고, 상세 사유에 "이 구간은 ~를 설명하고 있으며, ~출처(또는 팩시안)와 대조한 결과 정확히 일치하여 적합함"이라고 그 합격 논리를 명확히 서술하십시오.**
 
         반드시 JSON 배열 형식으로 응답하십시오.
         [
           {{
             "image_index": {idx},
-            "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "정상",
-            "title": "검토 항목 요약",
+            "risk_level": "치명적 위반" 또는 "수정 권고" 또는 "적합",
+            "title": "검토 항목 요약 (예: 단백질 권장량 팩트체크, 연출컷 주의문구 등)",
             "exact_text_in_design": "1단계 시안 데이터에서 발췌한 내용",
-            "fact_or_legal_ground": "팩시안 원문 데이터 또는 식약처 기준",
-            "discrepancy_analysis": "위반 사항에 대한 명확한 지적 내용"
+            "fact_or_legal_ground": "팩시안 원문 데이터 또는 식약처/WHO 기준",
+            "discrepancy_analysis": "판정 사유 (적합할 경우: '~내용을 설명하고 있으며, ~출처와 일치하여 적합함')"
           }}
         ]
         """
@@ -157,8 +160,9 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         try:
             review_response = model.generate_content([review_prompt, img_obj], generation_config=genai.types.GenerationConfig(temperature=0.0, response_mime_type="application/json"))
             chunk_issues = json.loads(review_response.text)
-            filtered_issues = [issue for issue in chunk_issues if issue.get("risk_level") != "정상"]
-            final_report.extend(filtered_issues)
+            
+            # 🔥 기존에 '정상/적합'을 필터링해서 날려버리던 코드를 삭제하여 모두 리포트에 포함시킵니다.
+            final_report.extend(chunk_issues)
         except Exception as e:
             pass
             
@@ -212,19 +216,28 @@ else:
                     with row_col2:
                         issues = [r for r in report_data if r.get("image_index") == idx]
                         if not issues: 
-                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>이 구간에는 팩시안과 불일치하는 오기재나 수정 사항이 발견되지 않았습니다.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="risk-pass"><div class="card-title">✅ 검토 완료</div>이 구간에서 특별한 검토 대상을 찾지 못했습니다.</div>', unsafe_allow_html=True)
                         else:
                             for issue in issues:
-                                risk = issue.get("risk_level", "정상")
-                                css_class = "risk-critical" if risk == "치명적 위반" else "risk-warning"
-                                icon = "❌" if risk == "치명적 위반" else "⚠️"
+                                risk = issue.get("risk_level", "적합")
+                                
+                                # UI 표시 로직 강화
+                                if risk == "치명적 위반":
+                                    css_class = "risk-critical"
+                                    icon = "❌"
+                                elif risk == "수정 권고":
+                                    css_class = "risk-warning"
+                                    icon = "⚠️"
+                                else: # "적합" 또는 "정상"
+                                    css_class = "risk-pass"
+                                    icon = "✅"
                                 
                                 st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
                                 st.markdown(f'<div class="card-title">{icon} {issue.get("title", "")}</div>', unsafe_allow_html=True)
                                 st.markdown(f"""
                                 - **시안 텍스트/이미지:** {issue.get('exact_text_in_design', '')}
                                 - **QC 팩트 기준:** {issue.get('fact_or_legal_ground', '')}
-                                - **조치사항:** {issue.get('discrepancy_analysis', '')}
+                                - **조치사항/사유:** {issue.get('discrepancy_analysis', '')}
                                 """)
                                 st.markdown('</div>', unsafe_allow_html=True)
                     st.markdown("---")
