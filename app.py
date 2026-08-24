@@ -122,7 +122,7 @@ def auto_extract_db_keywords_json(main_images):
         return {}
 
 # ==========================================
-# 4. 투트랙 에이전트 시스템 
+# 4. 투트랙 에이전트 시스템 (진행률 및 시간 추적 추가)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def extract_text_with_google_vision(uploaded_files):
@@ -141,10 +141,12 @@ def extract_text_with_google_vision(uploaded_files):
         file.seek(0)
     return extracted_text
 
-def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
+def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text, progress_bar, status_text):
     model = genai.GenerativeModel('gemini-2.5-flash')
     final_report = []
     chunk_list = []
+    total_chunks = len(main_images)
+    start_time = time.time()
 
     for idx, img_obj in enumerate(main_images):
         img_obj = (
@@ -152,6 +154,10 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
             if img_obj.size[0] > 2000 else img_obj
         )
         chunk_list.append(img_obj)
+        
+        # UI 업데이트: 실시간 소요 시간 및 진행률 텍스트 표시
+        elapsed_time = time.time() - start_time
+        status_text.info(f"⏳ **진행 상황:** [{idx + 1} / {total_chunks}] 번째 시안 구간 스캔 및 팩트체크 중... (현재 소요 시간: {elapsed_time:.1f}초)")
 
         # --- [1단계] 텍스트 필사 및 시각 요소(사진) 동시 묘사 ---
         extract_prompt = """
@@ -206,13 +212,16 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
         8. [원물 은폐 기만]: 검은콩/아몬드&잣을 크게 강조하는데 팩시안 배합비율이 1% 미만 극소량이면 지적.
         9. [인용 데이터 팩트 체크]: WHO/식약처 출처 권장량 수치가 팩트와 일치하는지 확인.
         
-        10. ⭐ **[범용적 영양/성분 강조 표시 정밀 팩트체크 (매우 중요)]**: 시안의 인포그래픽이나 카피에 특정 영양소나 성분을 강조하는 모든 표현(예: '저당', '무가당', '고단백', 'O가지 비타민', '식물성', '국산 OO 100%', '칼슘 풍부' 등)이 등장하면 절대 일반 마케팅으로 넘기지 마십시오. 반드시 팩시안 원시 데이터를 뒤져서 다음 범용 기준에 따라 크로스체크 하십시오.
-            - **[수치/함량 강조]**: 팩시안 영양정보표의 수치가 부합하는지 대조하거나, 원재료명에 대체 원료(감미료 등)가 명시되어 있는지 확인.
-            - **[가짓수/종류 강조]**: 팩시안 영양정보표에 기재된 해당 성분의 종류 개수를 직접 카운트하여 시안의 숫자와 정확히 일치하는지 확인.
-            - **[원료 특성 강조]**: 팩시안 원재료명을 확인하여 실제 투입된 원물 특성 및 배합비율과 논리적으로 일치하는지 대조.
-            (확인 결과 사실과 다르면 🚨수정 권고 처리)
+        10. ⭐ **[범용적 영양/성분 강조 표시 정밀 팩트체크]**: 시안에 특정 영양소나 성분을 강조하는 표현(예: 저당, 무가당, 고단백, 식물성 등)이 등장하면 팩시안 원시 데이터를 대조하여 수치, 가짓수, 원료 특성이 사실과 일치하는지 확인하십시오. 불일치 시 수정 권고.
+        
+        11. ⭐ **[원료적 특성 강조(면책 조항) 절대 예외 룰 (매우 중요)]**: 시안에서 철분, 식이섬유 등 특정 영양소를 나열하며 강조하더라도, 그 주변 텍스트에 **"* 원료(콩)에 대한 설명입니다"**, **"* 원액두유에 한함"**과 같이 해당 내용이 '최종 완제품'이 아닌 '원료 자체'의 특성임을 밝히는 **단서조항(주석)**이 함께 추출되었다면, 절대 팩시안 영양정보표와 대조하여 오류라고 지적하지 마십시오. 이는 합법적인 원료 설명 마케팅이므로 무조건 "적합" 판정하고, 판정 사유에 "원료적 특성에 대한 설명임을 명시하는 주석이 확인되어 적합함"이라고 브리핑하십시오.
             
-        11. ⭐ **[일반 마케팅 구간 내용 요약 (필수)]**: 위 1~10번에 해당하지 않는 텍스트라도 무조건 어떤 내용인지 요약하고 합격 도장(적합)을 찍어 JSON을 생성하십시오.
+        12. ⭐ **[일반 마케팅 구간 내용 요약 (필수)]**: 위 1~11번에 해당하지 않는 일반적인 텍스트/이미지라도 무조건 어떤 내용인지 요약하고 합격 도장(적합)을 찍어 JSON을 생성하십시오.
+
+        ⭐ **[모든 구간 100% 답변 의무화 - 절대 지시]** ⭐
+        해당 시안 구간이 완벽히 정상이라도, 무조건 "risk_level": "적합" 으로 JSON 객체를 최소 1개 이상 생성하십시오.
+        
+        image_index 필드에는 반드시 {idx} 값을 넣으십시오.
         """
 
         for attempt in range(3):
@@ -228,10 +237,9 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
                 
                 chunk_issues = json.loads(review_response.text)
 
-                # 🔥 핵심 수정 팩트: AI가 맘대로 순번(0, 1, 2)을 매겨서 엉뚱한 화면으로 날아가는 현상 원천 차단
                 if isinstance(chunk_issues, list):
                     for issue in chunk_issues:
-                        issue["image_index"] = idx  # 현재 처리 중인 구간 번호로 무조건 덮어쓰기
+                        issue["image_index"] = idx  
                 else:
                     chunk_issues = []
 
@@ -252,11 +260,11 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
                 if "429" in str(e) or "Quota" in str(e) or "503" in str(e):
                     time.sleep(3)
                 else:
-                    if attempt == 2: # 마지막 시도까지 실패하면 파이썬이 최후 보루 리포트 작성
+                    if attempt == 2: 
                         if DEBUG_MODE:
                             st.error(f"[구간 {idx+1}] 2단계(핀셋 검수) 처리 실패: {e}")
                         final_report.append({
-                            "image_index": idx, # 여기도 정확히 현재 idx 할당
+                            "image_index": idx, 
                             "risk_level": "적합",
                             "title": "일반 마케팅 구간 검토 완료",
                             "exact_text_in_design": design_raw_text[:200] if isinstance(design_raw_text, str) else "내용 없음",
@@ -266,7 +274,13 @@ def analyze_design_with_ai(main_images, ocr_extracted_text, db_context_text):
                     else:
                         time.sleep(1)
 
+        # UI 업데이트: Progress Bar 갱신
+        progress_bar.progress((idx + 1) / total_chunks)
         time.sleep(0.5)
+
+    # 전체 루프 종료 후 최종 완료 시간 업데이트
+    total_time = time.time() - start_time
+    status_text.success(f"✅ **전체 {total_chunks}개 구간 검토 완료!** (총 소요 시간: {total_time:.1f}초)")
 
     return json.dumps(final_report), chunk_list
 
@@ -314,51 +328,56 @@ else:
                         ]
                         final_db_context_text += f"\n[검색어 '{base_food}'] DB 요약\n" + "\n".join(simplified_db) + "\n"
 
-        with st.spinner("⚖️ [제2 에이전트] 각 구간의 마케팅 문구와 팩트를 100% 브리핑합니다..."):
-            try:
-                json_result, chunk_list = analyze_design_with_ai(
-                    main_img_objs, vision_extracted_text, final_db_context_text
-                )
-                report_data = json.loads(json_result)
+        # 💡 [새로운 기능 적용] 진행률 바 및 소요 시간 표시 컨테이너 생성
+        st.markdown("### ⚖️ [제2 에이전트] 정밀 팩트체크 진행 현황")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-                for idx, chunk_img in enumerate(chunk_list):
-                    st.markdown(f"### 📍 시안 구간 [{idx + 1}]")
-                    row_col1, row_col2 = st.columns([1, 1])
-                    with row_col1:
-                        st.image(chunk_img, use_container_width=True)
-                    with row_col2:
-                        issues = [r for r in report_data if r.get("image_index") == idx]
-                        if not issues:
+        try:
+            # analyze_design_with_ai 호출 시 progress_bar와 status_text 객체를 함께 전달
+            json_result, chunk_list = analyze_design_with_ai(
+                main_img_objs, vision_extracted_text, final_db_context_text, progress_bar, status_text
+            )
+            report_data = json.loads(json_result)
+
+            for idx, chunk_img in enumerate(chunk_list):
+                st.markdown(f"### 📍 시안 구간 [{idx + 1}]")
+                row_col1, row_col2 = st.columns([1, 1])
+                with row_col1:
+                    st.image(chunk_img, use_container_width=True)
+                with row_col2:
+                    issues = [r for r in report_data if r.get("image_index") == idx]
+                    if not issues:
+                        st.markdown(
+                            '<div class="risk-warning"><div class="card-title">⚠️ 오류 발생</div>'
+                            '이 구간에 해당하는 검토 결과를 찾지 못했습니다. 우측 상단의 Rerun을 눌러 다시 시도해주세요.</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        for issue in issues:
+                            risk = issue.get("risk_level", "적합")
+
+                            if risk == "치명적 위반":
+                                css_class = "risk-critical"
+                                icon = "❌"
+                            elif risk == "수정 권고":
+                                css_class = "risk-warning"
+                                icon = "⚠️"
+                            else:  # "적합"
+                                css_class = "risk-pass"
+                                icon = "✅"
+
+                            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
                             st.markdown(
-                                '<div class="risk-warning"><div class="card-title">⚠️ 오류 발생</div>'
-                                '이 구간에 해당하는 검토 결과를 찾지 못했습니다. 우측 상단의 Rerun을 눌러 다시 시도해주세요.</div>',
+                                f'<div class="card-title">{icon} {issue.get("title", "검토 완료")}</div>',
                                 unsafe_allow_html=True,
                             )
-                        else:
-                            for issue in issues:
-                                risk = issue.get("risk_level", "적합")
-
-                                if risk == "치명적 위반":
-                                    css_class = "risk-critical"
-                                    icon = "❌"
-                                elif risk == "수정 권고":
-                                    css_class = "risk-warning"
-                                    icon = "⚠️"
-                                else:  # "적합"
-                                    css_class = "risk-pass"
-                                    icon = "✅"
-
-                                st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-                                st.markdown(
-                                    f'<div class="card-title">{icon} {issue.get("title", "검토 완료")}</div>',
-                                    unsafe_allow_html=True,
-                                )
-                                st.markdown(f"""
-                                - **해당 구간 내용 요약:** {issue.get('exact_text_in_design', '')}
-                                - **QC 팩트 근거:** {issue.get('fact_or_legal_ground', '')}
-                                - **판정 사유 (브리핑):** {issue.get('discrepancy_analysis', '')}
-                                """)
-                                st.markdown('</div>', unsafe_allow_html=True)
-                    st.markdown("---")
-            except Exception as e:
-                st.error(f"오류 발생: {e}")
+                            st.markdown(f"""
+                            - **해당 구간 내용 요약:** {issue.get('exact_text_in_design', '')}
+                            - **QC 팩트 근거:** {issue.get('fact_or_legal_ground', '')}
+                            - **판정 사유 (브리핑):** {issue.get('discrepancy_analysis', '')}
+                            """)
+                            st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown("---")
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
