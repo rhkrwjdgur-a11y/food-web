@@ -106,7 +106,7 @@ def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel(MODEL_NAME)
     payload = [img.resize((1000, int(img.size[1] * (1000.0 / img.size[0]))), Image.LANCZOS) if img.size[0] > 1000 else img for img in main_images]
     
-    # 🔥 수정된 부분: 조리법/상태까지 묶어서 꼼꼼하게 검색어로 추출
+    # 조리법/상태까지 묶어서 꼼꼼하게 검색어로 추출하도록 강제
     payload.append("""타 식품과 수치를 비교하거나 식약처 DB를 인용하는 문구가 있다면 대분류 명사만 뽑지 말고, 시안에 적힌 구체적인 상태(예: "쇠고기 구운것", "대두 말린것", "닭고기 구운것")를 한 덩어리의 key로 하여 JSON 출력. 없으면 "NONE" 출력.""")
     
     try:
@@ -296,7 +296,7 @@ uploaded_master_fact = st.sidebar.file_uploader(
 st.sidebar.markdown("---")
 trigger_api = st.sidebar.button("🚀 초고속 AI 핀셋 교차 검증 시작", use_container_width=True)
 
-st.title("🛡️ 마케팅 상세페이지 정밀 통제 시스템 (V5.1 Ultimate Search & Parallel)")
+st.title("🛡️ 마케팅 상세페이지 정밀 통제 시스템 (V5.2 Ultimate Search & Parallel)")
 st.markdown("---")
 
 if not uploaded_main_images:
@@ -314,8 +314,16 @@ else:
         with st.spinner("🔍 [DB 연동] 외부 영양성분 DB 타겟 탐지 중..."):
             auto_dict = auto_extract_db_keywords_json(main_img_objs)
             final_db_context_text = ""
+            
             if auto_dict:
-                for base_food, detail_cond in auto_dict.items():
+                # 🔥 타입 충돌 에러(AttributeError) 안전장치 추가 완료
+                search_keywords = auto_dict.keys() if isinstance(auto_dict, dict) else auto_dict
+                
+                for base_food in search_keywords:
+                    # 문자열이 아닌 데이터 무시
+                    if not isinstance(base_food, str): 
+                        continue
+                        
                     db_data = query_food_nutrient_db(base_food)
                     if db_data:
                         simplified_db = [
