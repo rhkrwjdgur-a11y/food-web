@@ -106,7 +106,13 @@ def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel(MODEL_NAME)
     payload = [img.resize((1000, int(img.size[1] * (1000.0 / img.size[0]))), Image.LANCZOS) if img.size[0] > 1000 else img for img in main_images]
     
-    payload.append("""타 식품과 수치를 비교하거나 식약처 DB를 인용하는 문구가 있다면 대분류 명사만 뽑지 말고, 시안에 적힌 구체적인 상태(예: "쇠고기 구운것", "대두 말린것")를 한 덩어리의 key로 하여 JSON 출력. 없으면 "NONE" 출력.""")
+    # 🔥 [검색어 추출 로직 혁신]: 식약처 API가 에러를 뿜지 않도록 무조건 '단일 기본 명사'만 검색어로 쓰게 강제
+    payload.append("""
+    타 식품과 수치를 비교하거나 식약처 DB를 인용하는 문구가 있다면 JSON으로 출력하라.
+    🛑 [절대 규칙]: 
+    1. JSON의 Key는 무조건 식약처 DB에서 검색이 잘 되는 '가장 기본적인 식재료 원물 명사 단 1단어'로만 적으십시오. (예: "소고기", "대두", "닭고기")
+    2. 조리 상태나 부위 등 디테일한 수식어는 무조건 JSON의 Value값에 적으십시오. (예: {"소고기": "한우 등심 구운것", "대두": "노란콩 말린것"})
+    """)
     
     try:
         res = model.generate_content(payload, generation_config=genai.types.GenerationConfig(temperature=0.0)).text.strip()
@@ -277,7 +283,7 @@ uploaded_master_fact = st.sidebar.file_uploader(
 st.sidebar.markdown("---")
 trigger_api = st.sidebar.button("🚀 초고속 AI 핀셋 교차 검증 시작", use_container_width=True)
 
-st.title("🛡️ 마케팅 상세페이지 정밀 통제 시스템 (V6.0 Universal Master)")
+st.title("🛡️ 마케팅 상세페이지 정밀 통제 시스템 (V6.1 DB Optimized)")
 st.markdown("---")
 
 if not uploaded_main_images:
@@ -302,9 +308,10 @@ else:
                     if not isinstance(base_food, str): continue
                     db_data = query_food_nutrient_db(base_food)
                     if db_data:
+                        # 🔥 50개까지 넉넉하게 긁어와서 AI에게 세부 필터링을 맡김
                         simplified_db = [
                             f"- [{row.get('DESC_KOR', '이름없음')}] 열량:{row.get('NUTR_CONT1')}kcal, 단백질:{row.get('NUTR_CONT3')}g, 지방:{row.get('NUTR_CONT4')}g"
-                            for row in db_data[:20]
+                            for row in db_data[:50]
                         ]
                         final_db_context_text += f"\n[검색어 '{base_food}'] DB 요약\n" + "\n".join(simplified_db) + "\n"
 
