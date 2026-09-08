@@ -15,7 +15,7 @@ import socket
 # ==========================================
 # 1. 기본 페이지 설정 및 네트워크 방어
 # ==========================================
-st.set_page_config(page_title="상세페이지 정밀 검토 시스템", layout="wide")
+st.set_page_config(page_title="식품 상세페이지 QC 마스터", layout="wide")
 socket.setdefaulttimeout(600) # 대기 시간 10분 연장
 
 st.markdown("""
@@ -106,8 +106,7 @@ def auto_extract_db_keywords_json(main_images):
     model = genai.GenerativeModel(MODEL_NAME)
     payload = [img.resize((1000, int(img.size[1] * (1000.0 / img.size[0]))), Image.LANCZOS) if img.size[0] > 1000 else img for img in main_images]
     
-    # 조리법/상태까지 묶어서 꼼꼼하게 검색어로 추출하도록 강제
-    payload.append("""타 식품과 수치를 비교하거나 식약처 DB를 인용하는 문구가 있다면 대분류 명사만 뽑지 말고, 시안에 적힌 구체적인 상태(예: "쇠고기 구운것", "대두 말린것", "닭고기 구운것")를 한 덩어리의 key로 하여 JSON 출력. 없으면 "NONE" 출력.""")
+    payload.append("""타 식품과 수치를 비교하거나 식약처 DB를 인용하는 문구가 있다면 대분류 명사만 뽑지 말고, 시안에 적힌 구체적인 상태(예: "쇠고기 구운것", "대두 말린것")를 한 덩어리의 key로 하여 JSON 출력. 없으면 "NONE" 출력.""")
     
     try:
         res = model.generate_content(payload, generation_config=genai.types.GenerationConfig(temperature=0.0)).text.strip()
@@ -119,9 +118,6 @@ def auto_extract_db_keywords_json(main_images):
 # 4. 병렬 처리 (Multi-threading) & 3-Pass 검수 로직
 # ==========================================
 def process_single_chunk(idx, img_obj, ocr_extracted_text, db_context_text):
-    """개별 시안 이미지를 3-Pass로 분석하는 단일 워커 함수"""
-    
-    # [구글 Search Grounding 활성화]
     try:
         model = genai.GenerativeModel(MODEL_NAME, tools=[{"google_search": {}}])
     except:
@@ -129,30 +125,29 @@ def process_single_chunk(idx, img_obj, ocr_extracted_text, db_context_text):
         
     generation_config = genai.types.GenerationConfig(temperature=0.0)
 
-    # --- [Pass 1] 텍스트 및 시각 요소 원초 추출 ---
+    # --- [Pass 1] 원초 추출 ---
     extract_prompt = """
-    당신은 객관적인 이미지 분석기입니다. 
-    1. [텍스트 추출]: 이 이미지에 적힌 모든 글자를 추출하십시오. 출처(예: KANTAR, WHO 등)나 주석(*)이 있다면 절대 누락하지 마십시오.
-    2. [시각 요소]: 요리, 원물, 연출 사진 등이 있다면 묘사하십시오.
+    객관적인 이미지 분석기입니다. 
+    1. [텍스트 추출]: 이 이미지에 적힌 모든 글자를 픽셀 단위로 추출하십시오. 띄어쓰기와 출처 기호(*)를 절대 누락하지 마십시오.
+    2. [시각 요소]: 요리, 원물, 연출 사진 묘사.
     """
-    design_raw_text = "텍스트 추출 실패"
     try:
         resp1 = model.generate_content([extract_prompt, img_obj], generation_config=generation_config)
         design_raw_text = resp1.text
     except:
-        pass
+        design_raw_text = "텍스트 추출 실패"
         
     time.sleep(1)
 
-    # --- [Pass 1.5] OCR 노이즈 정제 (환각 방지) ---
-    clean_prompt = f"다음 텍스트의 기계적 노이즈만 정제하고 의미는 절대 바꾸지 마라:\n{design_raw_text}"
+    # --- [Pass 1.5] 정제 ---
+    clean_prompt = f"다음 텍스트의 기계적 OCR 노이즈만 정제하고 띄어쓰기나 원문은 절대 바꾸지 마라:\n{design_raw_text}"
     try:
         resp15 = model.generate_content([clean_prompt], generation_config=generation_config)
         verified_text = resp15.text
     except:
         verified_text = design_raw_text
 
-    # --- [Pass 2] 선임자급 핀셋 검수 (강력한 pre_calc 연산 적용) ---
+    # --- [Pass 2] 범용 법리 룰이 탑재된 핀셋 검수 ---
     review_prompt = f"""
     당신은 실무 경험이 풍부한 대한민국 최고의 식품 마케팅 QC 선임자입니다.
     아래 [1단계 정제 데이터], [Google Vision API 팩시안 데이터], [외부 영양성분 DB 요약]을 대조하십시오.
@@ -167,35 +162,23 @@ def process_single_chunk(idx, img_obj, ocr_extracted_text, db_context_text):
     {db_context_text}
 
     <pre_calc>
-    1. 🛑 [원물 기초 수치 정밀 팩트체크 (가장 중요!)]: 시안에 기재된 원물의 구체적 상태(예: 쇠고기 '한우 등심 구운것', 닭고기 '구운것', 대두 '노란콩 말린것')와 그 수치(18.9g 등)를 파악하십시오. 
-       👉 그 후, 제공된 [외부 영양성분 DB 요약]이나 당신의 웹 검색(Search Grounding)을 활용해 '정확히 일치하는 부위/조리법'의 수치를 찾아 대조하십시오.
-       👉 만약 DB에 '구운것', '말린것' 등 시안과 정확히 일치하는 조건의 데이터가 없다면, 절대 상식선에서 대충 합격시키지 마십시오! 무조건 "⚠️ 제공된 DB 요약에서 '등심 구운것' 등에 대한 정확한 수치를 찾지 못했습니다. 식약처 DB 원본에서 해당 수치(18.9g 등)가 맞는지 실무자의 최종 확인이 필요합니다."라고 보고하십시오.
-    2. [원물 비교 강제 연산]: (위 1번 확인 후) 시안에 적힌 192%, 130% 등의 배수 비율이 앞서 적힌 수치들(18.9, 27.8, 36.2)을 기준으로 수학적으로 올바르게 계산되었는지 반드시 사칙연산(예: 18.9 * 1.92 = 36.28)으로 직접 검증하십시오.
-    3. [원료적 특성 면책 조항 확인]: 특정 성분을 강조했으나 옆에 "* 원료(콩)에 대한 설명입니다", "* 제품과 무관한 원물에 대한 정보입니다" 주석이 있는가? (있다면 팩시안 완제품 대조 면제 합법)
-    4. [연출 컷 주의문구]: 연출된 원물 사진이 있는데 '이미지 예' 문구가 누락되었는가?
+    1. [원물 기초 수치 정밀 팩트체크]: 기재된 원물의 구체적 상태(예: 소고기 구운것 18.9g)를 제공된 DB나 구글 검색을 통해 팩트체크하고, DB 매칭 실패 시 무조건 "실무자 확인 요망"으로 지시할 것.
+    2. [원물 비교 강제 연산]: 비교 비율(예: 192%)이 기초 수치를 기준으로 산수 연산이 맞는지 계산 검증.
     </pre_calc>
 
-    🚨 [과잉 지적 금지 및 연출 컷 예외 절대 규칙] 🚨
-    1. **텍스트 창조 지적 금지:** [1단계 시안 데이터]에 '영양성분표'나 '원재료명' 수치가 아예 없다면, "누락되었다"고 지적하지 말고 무조건 "적합" 처리하십시오.
-    2. **⭐ [연출 컷 주의문구 예외]:** 단, [1단계 시안 데이터]에 '[시각 요소]'로 원물 연출 사진이 묘사되어 있는데, '이미지 예' 문구가 "없다면", 명백한 주의문구 누락이므로 "수정 권고"로 지적해야 합니다.
+    🚨 [최상위 범용 법리 통제 룰 (V6.0)] 🚨
+    1. 🛑 **[가공상태(성상) 임의 치환 전면 금지 룰]**: 원재료명에 사용되는 '추출액/추출물', '농축액/농축분말', '즙/페이스트' 등은 화학적 공정이 명백히 다른 법정 명칭입니다. 시안 마케팅 구간에서 유의어(어감 개선) 목적으로 팩시안의 '추출액'을 '추출물'로 바꾸거나 그 반대로 적는 행위 일체를 "원재료 표기 세부 내용 불일치(🚨수정 권고)"로 적발하십시오. (토시 하나 틀리면 안 됨)
+    2. 🛑 **[지역명 마케팅 국가명 병기 의무 룰]**: 제품명이나 디자인 뱃지 등에 특정 지역명(예: 우바산, 시칠리아산, 보르도산)을 강조할 경우, 반드시 팩시안 기준의 '공식 국가명(스리랑카산, 이탈리아산 등)'을 함께 수식어로 병기해야 합니다. 국가명 없이 지역명 단독 표기 시 원산지 오인 기만으로 "수정 권고" 처리하십시오.
+    3. 🛑 **[결핍/비함유 강조 및 간접비교 부당광고 통제 룰]**: 특정 성분(카페인, 첨가물, 나트륨 등)을 지칭하며 '낮은', '부담 없이', '~제로' 등으로 강조하는 문구가 발견되면 무관용으로 팩트체크 하십시오. 
+        - 식약처 기준(예: 다류/커피류의 디카페인은 카페인 90% 이상 제거)에 부합한다는 완벽한 증빙(팩시안 내용)이 없거나, 다른 제품을 간접적으로 다르게 인식하게 하는 내용이라면 무조건 **"「식품등의 부당한 표시 또는 광고의 내용 기준」 제2조 5호 위반 소지 (기만 및 부당광고)"**를 근거로 🚨수정 권고 하십시오.
 
-    🔥 [상세페이지 핵심 핀셋 검수 룰]
-    1. [영양정보 복붙 오타 색출]: [1단계 시안]에 '영양정보' 수치가 적혀있을 때만 팩시안과 1:1 대조.
-    2. [알레르기 문구 대조]: [1단계 시안]에 '주의문구'가 있을 때만 팩시안과 대조.
-    3. [제품명 오기재]: 카피나 제품명에 '&고칼슘' 누락 여부 확인.
-    4. [비타민 기능성 명칭]: 비타민E 설명 텍스트가 있을 때, '항산화작용을 하여' 누락 지적.
-    5. [연출 컷 주의문구 누락 적발]: (위 절대 규칙 2번에 따름)
-    6. [카피 오타]: '무규 포장' -> '무균 포장' 색출.
-    7. [원재료명 오기재]: 철자 오류 색출.
-    8. [원물 은폐 기만]: 팩시안 배합비율 1% 미만 극소량인데 전면 강조 시 지적.
-    9. ⭐ **[인용 데이터 및 원물 수치 팩트 체크 (핵심)]**: 출처를 표기하며 타 원물의 영양 수치(소고기 단백질 등)를 나열한 경우, **반드시 <pre_calc> 단계의 DB 팩트체크 결과와 산수 연산 결과를 판정 사유에 명시하십시오.** 허위 수치이거나 계산이 틀렸다면 🚨수정 권고, DB 매칭 실패 시 ⚠️확인 요망 처리.
-    10. ⭐ **[범용적 영양/성분 강조 표시 정밀 팩트체크]**: '저당', '무가당', '고단백', '식물성' 등이 등장하면 팩시안 원시 데이터를 대조하여 수치, 가짓수, 원료 특성이 사실과 일치하는지 확인.
-    11. ⭐ **[원료적 특성 강조(면책 조항) 절대 예외 룰]**: "* 제품과 무관한 원물에 대한 정보입니다" 등의 주석이 있다면, 완제품 팩시안과의 대조는 면제(✅적합)하되, **원물 기초 수치 자체의 팩트체크(9번 룰)는 절대 생략하지 말고 수행하십시오.**
-    12. ⭐ **[일반 마케팅 구간 내용 요약 (필수)]**: 위 1~11번에 해당하지 않더라도 무조건 어떤 내용인지 요약하고 합격 도장(적합)을 찍어 JSON을 생성하십시오.
+    🔥 [기존 상세페이지 핀셋 검수 룰]
+    4. 🛑 **[초정밀 띄어쓰기 및 화학명 스캔 룰]**: 하단 정보고시란의 원재료명(특히 '탄산수소나트륨', '비타민C' 등)에 임의의 띄어쓰기(예: 탄산수 소나트륨)가 발생하지 않았는지 팩시안과 픽셀 단위로 대조하여 무관용으로 지적하십시오.
+    5. [연출 컷 주의문구 예외 룰]: 연출된 사진이 있는데 '이미지 예', '연출된 이미지입니다' 문구가 없으면 무조건 지적.
+    6. [영양/성분 강조 크로스체크]: '저당', '고단백' 등 강조 시 팩시안 숫자 1:1 대조.
+    7. [원료적 특성 면책 조항 예외 룰]: "* 제품과 무관한 원물 정보" 주석이 있으면 완제품 대조는 면제하되, 원물 자체 수치의 팩트체크(pre_calc)는 반드시 수행할 것.
 
-    ⭐ **[모든 구간 100% 답변 의무화 - 절대 지시]** ⭐
-    해당 시안 구간이 완벽히 정상이라도, 무조건 "risk_level": "적합" 으로 JSON 객체를 최소 1개 이상 생성하십시오.
-    
+    ⭐ 해당 구간이 완벽히 정상이라도, 무조건 "risk_level": "적합" 으로 JSON 객체를 최소 1개 이상 생성하십시오.
     image_index 필드에는 반드시 {idx} 값을 넣으십시오.
     """
 
@@ -212,7 +195,6 @@ def process_single_chunk(idx, img_obj, ocr_extracted_text, db_context_text):
             
             chunk_issues = json.loads(review_response.text)
             
-            # 인덱스 텔레포트(환각) 원천 차단
             if isinstance(chunk_issues, list):
                 for issue in chunk_issues:
                     issue["image_index"] = idx  
@@ -255,7 +237,6 @@ def run_parallel_analysis(main_images, ocr_extracted_text, db_context_text, prog
     
     start_time = time.time()
     
-    # ThreadPoolExecutor를 이용한 초고속 병렬 처리 (워커 4개 동시 가동)
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(process_single_chunk, i, img, ocr_extracted_text, db_context_text): i 
@@ -296,7 +277,7 @@ uploaded_master_fact = st.sidebar.file_uploader(
 st.sidebar.markdown("---")
 trigger_api = st.sidebar.button("🚀 초고속 AI 핀셋 교차 검증 시작", use_container_width=True)
 
-st.title("🛡️ 마케팅 상세페이지 정밀 통제 시스템 (V5.2 Ultimate Search & Parallel)")
+st.title("🛡️ 마케팅 상세페이지 정밀 통제 시스템 (V6.0 Universal Master)")
 st.markdown("---")
 
 if not uploaded_main_images:
@@ -316,14 +297,9 @@ else:
             final_db_context_text = ""
             
             if auto_dict:
-                # 🔥 타입 충돌 에러(AttributeError) 안전장치 추가 완료
                 search_keywords = auto_dict.keys() if isinstance(auto_dict, dict) else auto_dict
-                
                 for base_food in search_keywords:
-                    # 문자열이 아닌 데이터 무시
-                    if not isinstance(base_food, str): 
-                        continue
-                        
+                    if not isinstance(base_food, str): continue
                     db_data = query_food_nutrient_db(base_food)
                     if db_data:
                         simplified_db = [
@@ -337,7 +313,6 @@ else:
         status_text = st.empty()
 
         try:
-            # 병렬 처리 함수 호출
             json_result, chunk_list, log_data = run_parallel_analysis(
                 main_img_objs, vision_extracted_text, final_db_context_text, progress_bar, status_text
             )
@@ -349,7 +324,6 @@ else:
                 
                 with row_col1:
                     st.image(chunk_img, use_container_width=True)
-                    
                     if DEBUG_MODE and idx in log_data:
                         with st.expander("🕵️‍♂️ [디버그] Pass 1.5 정제 텍스트 보기"):
                             st.code(log_data[idx])
