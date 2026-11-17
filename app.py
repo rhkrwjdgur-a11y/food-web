@@ -1,8 +1,6 @@
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import google.generativeai as genai
-from google.cloud import vision
-from google.oauth2 import service_account
 from PIL import Image
 import os
 import json
@@ -37,24 +35,17 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. API 키 연동 (Secrets)
+# 2. API 키 연동 (Secrets - Google Vision 제거)
 # ==========================================
 try:
     genai.configure(api_key=st.secrets["AI_VISION_API_KEY"])
     FOOD_API_KEY = st.secrets["FOOD_SAFETY_API_KEY"]
 
-    gcp_json_string = st.secrets["gcp_service_account"]["GOOGLE_VISION_KEY"]
-    gcp_credentials = json.loads(gcp_json_string)
-    gcp_credentials["private_key"] = gcp_credentials["private_key"].replace("\\n", "\n")
-
-    vision_credentials = service_account.Credentials.from_service_account_info(gcp_credentials)
-    vision_client = vision.ImageAnnotatorClient(credentials=vision_credentials)
-
 except KeyError as e:
     st.error(f"시스템 오류: Secrets 설정 누락 - {e}")
     st.stop()
 except Exception as e:
-    st.error(f"구글 인증 오류: {e}")
+    st.error(f"초기화 오류: {e}")
     st.stop()
 
 DEBUG_MODE = st.sidebar.checkbox("🐞 디버그 모드 및 시스템 로그", value=True)
@@ -97,18 +88,34 @@ REVIEW_RESPONSE_SCHEMA = {
 }
 
 # ==========================================
-# 3. 보조 함수
+# 3. 보조 함수 (Gemini 기반 팩시안 해독 및 식약처 DB)
 # ==========================================
 @st.cache_data(show_spinner=False)
-def extract_text_with_google_vision(uploaded_files):
+def extract_master_fact_text(uploaded_files):
     if not uploaded_files: return "팩시안 이미지 없음"
     extracted_text = ""
+    model = genai.GenerativeModel(MODEL_NAME)
+    prompt = "이 확정 표시사항(팩시안)에 적힌 모든 텍스트, 숫자, 기호, 괄호, 마침표, 띄어쓰기를 임의 수정 없이 픽셀 단위로 원문 100% 그대로 추출하라."
+    
     for file in uploaded_files:
-        content = file.read()
-        image = vision.Image(content=content)
-        response = vision_client.document_text_detection(image=image)
-        if response.full_text_annotation:
-            extracted_text += response.full_text_annotation.text + "\n\n"
+        file.seek(0)
+        try:
+            if file.name.lower().endswith(".pdf"):
+                pdf_Part = {"mime_type": "application/pdf", "data": file.read()}
+                response = model.generate_content(
+                    [prompt, pdf_Part],
+                    generation_config=genai.types.GenerationConfig(temperature=0.0)
+                )
+            else:
+                img = Image.open(file)
+                response = model.generate_content(
+                    [prompt, img],
+                    generation_config=genai.types.GenerationConfig(temperature=0.0)
+                )
+            if response and response.text:
+                extracted_text += response.text + "\n\n"
+        except Exception as e:
+            extracted_text += f"[팩시안 판독 오류 ({file.name}): {e}]\n\n"
         file.seek(0)
     return extracted_text
 
@@ -257,8 +264,8 @@ else:
                 st.image(img, use_container_width=True)
         else:
             if "full_report_data" not in st.session_state:
-                with st.spinner("👁️ [팩시안 기준점 확보] 구글 비전 API가 팩시안을 해독 중입니다..."):
-                    vision_extracted_text = extract_text_with_google_vision(uploaded_master_fact)
+                with st.spinner("👁️ [팩시안 기준점 확보] AI 비전 엔진이 팩시안을 정밀 해독 중입니다..."):
+                    vision_extracted_text = extract_master_fact_text(uploaded_master_fact)
                 
                 st.markdown("### ⚖️ [AI 에이전트 가동] 1:1 마케팅 문구 해체 및 법규 스캔 현황")
                 progress_bar = st.progress(0)
